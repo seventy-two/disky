@@ -409,7 +409,7 @@ void App::message(const Message& m, bool groupStart, bool alt, float w, float h)
         ImGui::PushFont(fonts_.regular, 11);
         std::string t = formatTime(m.timestamp, true);
         float tw = ImGui::CalcTextSize(t.c_str()).x;
-        dl->AddText(ImVec2(o.x + w - 160 * scale_ - tw, textY + 2 * scale_), U32(c.muted), t.c_str());
+        dl->AddText(ImVec2(o.x + w - 120 * scale_ - tw, textY + 2 * scale_), U32(c.muted), t.c_str());
         ImGui::PopFont();
     }
 
@@ -540,7 +540,9 @@ void App::message(const Message& m, bool groupStart, bool alt, float w, float h)
         confirmDelete_ = 0;
         contextMessage_ = m.id;
     }
-    ImGui::SetNextWindowSize(ImVec2(380 * scale_, 0));
+    // Only size the dialog when it's this message's: a size set and not
+    // used carries over to the next window, such as a tooltip.
+    if (contextMessage_ == m.id) ImGui::SetNextWindowSize(ImVec2(380 * scale_, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20 * scale_, 16 * scale_));
     if (contextMessage_ == m.id && ImGui::BeginPopupModal("Delete message?", nullptr, ImGuiWindowFlags_NoResize)) {
         ImGui::TextWrapped("Delete this message? This can't be undone.");
@@ -566,9 +568,9 @@ void App::toolbar(const Message& m, ImVec2 topRight) {
     bool canReact = !guild_ || (perms(m.channelId) & perm::AddReactions);
     int n = (canReact ? 1 : 0) + (canSend(m.channelId) ? 1 : 0) + (mine ? 1 : 0) + (canManage ? 1 : 0);
     if (n == 0) return;
-    float b = 32 * scale_, pad = 2 * scale_;
+    float b = 22 * scale_, pad = 1 * scale_;
     float w = n * b + pad * 2;
-    ImVec2 a(topRight.x - w, std::max(topRight.y - 14 * scale_, ImGui::GetWindowPos().y + 2 * scale_));
+    ImVec2 a(topRight.x - w, std::max(topRight.y - 10 * scale_, ImGui::GetWindowPos().y + 2 * scale_));
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(a, ImVec2(a.x + w, a.y + b + pad * 2), U32(c.bg));
     dl->AddRect(a, ImVec2(a.x + w, a.y + b + pad * 2), U32(c.border));
@@ -576,7 +578,7 @@ void App::toolbar(const Message& m, ImVec2 topRight) {
     auto button = [&](const char* id, const char* glyph, const char* tip) {
         ImGui::SetCursorScreenPos(ImVec2(x, a.y + pad));
         x += b;
-        return iconButton(id, glyph, ImVec2(b, b), 18, fonts_.regular, tip);
+        return iconButton(id, glyph, ImVec2(b, b), 12, fonts_.regular, tip);
     };
     ImGui::PushID(int(m.id & 0x7FFFFFFF));
     if (canReact && button("react", icon::Emoji, "Add reaction")) {
