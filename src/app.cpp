@@ -163,6 +163,14 @@ void App::SetDark(bool dark) {
     ApplyTheme(dark_, scale_);
 }
 
+bool App::BeforeFrame() {
+    if (!LoadNeededFonts(fonts_)) return false;
+    // Text laid out before measured the missing glyphs: lay it out again.
+    layouts_.clear();
+    textLayouts_.clear();
+    return true;
+}
+
 void App::SaveWindow() {
     WINDOWPLACEMENT wp{sizeof(wp)};
     if (!GetWindowPlacement(hwnd_, &wp)) return;

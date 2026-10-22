@@ -57,7 +57,45 @@ ImFont* addFont(const std::string& path, ImFontConfig cfg, const ImWchar* ranges
     return ImGui::GetIO().Fonts->AddFontFromMemoryTTF(data->data(), int(data->size()), kBody, &cfg, ranges);
 }
 
+// Scripts that need a font loading on demand: what's wanted and what's in.
+enum Script { Han = 1, Hangul = 2 };
+int wanted = 0, loaded = 0;
+
 }  // namespace
+
+void NoteText(std::string_view text) {
+    if ((wanted | loaded) == (Han | Hangul)) return;
+    for (size_t i = 0; i < text.size(); i++) {
+        unsigned char b = (unsigned char)text[i];
+        if (b < 0xE1 || b > 0xEF || i + 2 >= text.size()) continue;  // CJK is all 3-byte UTF-8
+        uint32_t cp = ((b & 0x0F) << 12) | ((text[i + 1] & 0x3F) << 6) | (text[i + 2] & 0x3F);
+        if ((cp >= 0x1100 && cp <= 0x11FF) || (cp >= 0x3130 && cp <= 0x318F) || (cp >= 0xAC00 && cp <= 0xD7AF))
+            wanted |= Hangul;
+        else if ((cp >= 0x2E80 && cp <= 0x9FFF) || (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0xFF00 && cp <= 0xFFEF))
+            wanted |= Han;
+        i += 2;
+    }
+}
+
+bool LoadNeededFonts(const Fonts& f) {
+    int add = wanted & ~loaded;
+    if (!add) return false;
+    // Microsoft YaHei for Chinese (and Japanese, kana included); Malgun
+    // Gothic for Korean. Merged into every face, sharing one copy.
+    auto merge = [&](const char* file) {
+        std::string path = fontPath(file);
+        for (ImFont* dst : {f.regular, f.bold, f.italic, f.boldItalic, f.semibold, f.mono}) {
+            ImFontConfig cfg;
+            cfg.MergeMode = true;
+            cfg.DstFont = dst;
+            addFont(path, cfg);
+        }
+    };
+    if (add & Han) merge("msyh.ttc");
+    if (add & Hangul) merge("malgun.ttf");
+    loaded |= add;
+    return true;
+}
 
 // Always dark, whatever Windows uses: disky has one theme.
 bool SystemUsesDarkTheme() { return true; }

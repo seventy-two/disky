@@ -119,6 +119,7 @@ private:
                 if (wrap == s && s < e) wrap = s + 1;
                 Piece line;
                 line.text.assign(s, wrap);
+                NoteText(line.text);
                 line.font = fonts_.mono;
                 line.fontSize = size;
                 line.colour = U32(c.text);
@@ -188,6 +189,7 @@ private:
 
     void emit(const std::string& word, ImFont* font, float size, const Span& sp, int index, ImU32 colour, bool pill,
               const std::string& link, uint64_t channel) {
+        NoteText(word);
         ImVec2 sz = font->CalcTextSizeA(size, FLT_MAX, 0, word.c_str());
         // Join to the last piece if it's the same span on the same line.
         if (lastSpan_ == index && !out_.pieces.empty() && out_.pieces.back().kind == Piece::Kind::Text &&
@@ -339,6 +341,7 @@ float Label(ImDrawList* dl, ImFont* font, float size, ImVec2 at, ImU32 colour, c
         std::string text, file;
         float w;
     };
+    NoteText(text);
     std::vector<Part> parts;
     float emoji = size * 1.15f, total = 0;
     for (size_t i = 0; i < text.size();) {

@@ -99,6 +99,7 @@ void renderFrame(bool present) {
         resizeW = resizeH = 0;
         createTarget();
     }
+    if (app->BeforeFrame()) framesWanted = 3;
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();

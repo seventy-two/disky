@@ -39,6 +39,9 @@ public:
     // Pump takes in what background threads have received, whether or not
     // the window's showing, so notifications still fire.
     void Pump();
+    // BeforeFrame loads fonts text drawn last frame needed; it returns true
+    // if it did, so another frame should be drawn. Call it before NewFrame.
+    bool BeforeFrame();
     // Frame draws the UI, between ImGui::NewFrame and Render.
     void Frame();
     // Busy says frames are wanted continuously (a video's playing).

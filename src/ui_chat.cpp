@@ -139,6 +139,7 @@ void App::chat(float x, float y, float w, float h) {
     float right = hasMembers ? 48 * scale_ : 12 * scale_;
     if (!ch.topic.empty()) {
         std::string topic = ch.topic.substr(0, ch.topic.find('\n'));
+        NoteText(topic);
         ImGui::PushFont(fonts_.regular, 14);
         float avail = w - right - tx - 12 * scale_;
         if (avail > 60 * scale_) {
