@@ -333,6 +333,74 @@ Hit Draw(const Layout& l, ImVec2 at, const ImageFor& images, const std::vector<i
     return hit;
 }
 
+float Label(ImDrawList* dl, ImFont* font, float size, ImVec2 at, ImU32 colour, const std::string& text, float maxWidth,
+            const ImageFor& images) {
+    struct Part {
+        std::string text, file;
+        float w;
+    };
+    std::vector<Part> parts;
+    float emoji = size * 1.15f, total = 0;
+    for (size_t i = 0; i < text.size();) {
+        std::string file;
+        if (size_t n = EmojiAt(text, i, &file)) {
+            parts.push_back({text.substr(i, n), file, emoji + 2});
+            i += n;
+            continue;
+        }
+        size_t j = i;
+        DecodeUtf8(text, j);
+        if (parts.empty() || !parts.back().file.empty()) parts.push_back({"", "", 0});
+        parts.back().text += text.substr(i, j - i);
+        i = j;
+    }
+    for (auto& p : parts)
+        if (p.file.empty()) p.w = font->CalcTextSizeA(size, FLT_MAX, 0, p.text.c_str()).x;
+    for (const auto& p : parts) total += p.w;
+    const char* ellipsis = "\xE2\x80\xA6";
+    float ew = font->CalcTextSizeA(size, FLT_MAX, 0, ellipsis).x;
+    bool cut = maxWidth > 0 && total > maxWidth;
+    float limit = cut ? maxWidth - ew : FLT_MAX, x = 0;
+    for (const auto& p : parts) {
+        if (!p.file.empty()) {
+            if (x + p.w > limit) break;
+            if (dl) {
+                ImTextureID t = images ? images("https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/72x72/" + p.file + ".png")
+                                       : ImTextureID(0);
+                ImVec2 a(at.x + x + 1, at.y + (size - emoji) / 2 + size * 0.1f);
+                if (t) dl->AddImage(ImTextureRef(t), a, ImVec2(a.x + emoji, a.y + emoji));
+            }
+            x += p.w;
+            continue;
+        }
+        if (x + p.w <= limit) {
+            if (dl) dl->AddText(font, size, ImVec2(at.x + x, at.y), colour, p.text.c_str());
+            x += p.w;
+            continue;
+        }
+        // Cut this run where it stops fitting, by whole characters.
+        std::string shown;
+        float w = 0;
+        for (size_t i = 0; i < p.text.size();) {
+            size_t j = i;
+            DecodeUtf8(p.text, j);
+            float cw = font->CalcTextSizeA(size, FLT_MAX, 0, p.text.c_str() + i, p.text.c_str() + j).x;
+            if (x + w + cw > limit) break;
+            shown += p.text.substr(i, j - i);
+            w += cw;
+            i = j;
+        }
+        if (dl) dl->AddText(font, size, ImVec2(at.x + x, at.y), colour, shown.c_str());
+        x += w;
+        break;
+    }
+    if (cut) {
+        if (dl) dl->AddText(font, size, ImVec2(at.x + x, at.y), colour, ellipsis);
+        x += ew;
+    }
+    return x;
+}
+
 std::string PlainText(const std::string& content, const Resolver& names) {
     std::string out;
     for (const auto& p : Parse(content)) {

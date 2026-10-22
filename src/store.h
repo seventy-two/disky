@@ -107,6 +107,7 @@ struct MemberList {
     std::string id;
     int memberCount = 0, onlineCount = 0;
     std::vector<Item> items;  // sparse: ranges not yet sent are empty items
+    std::map<std::string, int> groupCounts;  // members in each group
 };
 
 struct Media {

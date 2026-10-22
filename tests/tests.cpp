@@ -99,7 +99,7 @@ static json readyFixture() {
         {"id": "201", "last_message_id": "400", "mention_count": 0},
         {"id": "400", "last_message_id": "600", "mention_count": 0}
       ]},
-      "user_guild_settings": {"entries": []}
+      "user_guild_settings": {"entries": [{"guild_id": "999", "muted": true}]}
     })");
 }
 
@@ -109,6 +109,8 @@ static void testReady() {
     CHECK_EQ(fx.size(), size_t(1));
     CHECK_EQ(s.me, Snowflake(1));
     CHECK_EQ(s.guilds.at(100).name, std::string("Guild"));
+    // Settings for a guild we've left don't make it appear.
+    CHECK_EQ(s.guilds.size(), size_t(1));
     // general is visible and in its category, secret is denied, voice isn't
     // text, and the empty category is left out.
     auto list = s.GuildChannels(100);

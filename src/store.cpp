@@ -342,9 +342,9 @@ void Store::readMember(Snowflake guildId, const json& j) {
         readUser(*u);
         uid = id(*u, "id");
     }
-    if (!uid) return;
-    Guild& g = guilds[guildId];
-    Member& m = g.members[uid];
+    auto gi = guilds.find(guildId);
+    if (!uid || gi == guilds.end()) return;
+    Member& m = gi->second.members[uid];
     m.userId = uid;
     if (j.contains("nick")) m.nick = str(j, "nick");
     if (j.contains("avatar")) m.avatar = str(j, "avatar");
@@ -405,7 +405,8 @@ void Store::readGuildSettings(const json& e) {
     s.mutedChannels.clear();
     for (const auto& o : arr(e, "channel_overrides"))
         if (flag(o, "muted")) s.mutedChannels.insert(id(o, "channel_id"));
-    if (gid) guilds[gid].muted = s.muted;
+    // Settings outlive membership: only guilds we're in take them.
+    if (auto g = guilds.find(gid); g != guilds.end()) g->second.muted = s.muted;
 }
 
 void Store::readSettingsProto(const std::string& base64) {
@@ -572,7 +573,7 @@ std::vector<Effect> Store::Apply(const std::string& type, const json& d) {
     } else if (type == "GUILD_DELETE") {
         Snowflake gid = id(d, "id");
         if (flag(d, "unavailable")) {
-            guilds[gid].unavailable = true;
+            if (auto g = guilds.find(gid); g != guilds.end()) g->second.unavailable = true;
         } else {
             if (auto g = guilds.find(gid); g != guilds.end())
                 for (Snowflake c : g->second.channels) channels.erase(c);
@@ -611,7 +612,9 @@ std::vector<Effect> Store::Apply(const std::string& type, const json& d) {
         Channel ch = readChannel(d, 0);
         if (!ch.id) return fx;
         if (ch.guildId) {
-            auto& list = guilds[ch.guildId].channels;
+            auto g = guilds.find(ch.guildId);
+            if (g == guilds.end()) return fx;
+            auto& list = g->second.channels;
             if (std::find(list.begin(), list.end(), ch.id) == list.end()) list.push_back(ch.id);
         }
         // An update may leave out recipients and the last message.
@@ -623,8 +626,8 @@ std::vector<Effect> Store::Apply(const std::string& type, const json& d) {
     } else if (type == "CHANNEL_DELETE") {
         Snowflake cid = id(d, "id");
         if (auto c = channels.find(cid); c != channels.end()) {
-            if (c->second.guildId) {
-                auto& list = guilds[c->second.guildId].channels;
+            if (auto g = guilds.find(c->second.guildId); g != guilds.end()) {
+                auto& list = g->second.channels;
                 list.erase(std::remove(list.begin(), list.end(), cid), list.end());
             }
             channels.erase(c);
@@ -735,6 +738,8 @@ void Store::memberListUpdate(const json& d) {
     list.id = str(d, "id");
     list.memberCount = num(d, "member_count", list.memberCount);
     list.onlineCount = num(d, "online_count", list.onlineCount);
+    if (d.contains("groups"))
+        for (const auto& g : arr(d, "groups")) list.groupCounts[str(g, "id")] = num(g, "count");
     auto item = [&](const json& j) {
         MemberList::Item it;
         if (auto grp = j.find("group"); grp != j.end()) {

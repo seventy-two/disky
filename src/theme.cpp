@@ -124,7 +124,7 @@ void ApplyTheme(bool dark, float scale) {
     c[ImGuiCol_Separator] = p.border;
     c[ImGuiCol_TextSelectedBg] = ImVec4(p.accent.x, p.accent.y, p.accent.z, 0.4f);
     c[ImGuiCol_ModalWindowDimBg] = ImVec4(0, 0, 0, dark ? 0.6f : 0.35f);
-    c[ImGuiCol_NavCursor] = p.accent;
+    c[ImGuiCol_NavCursor] = ImVec4(0, 0, 0, 0);  // no keyboard focus outline
 }
 
 Fonts LoadFonts() {

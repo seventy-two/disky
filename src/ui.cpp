@@ -338,10 +338,8 @@ void App::sidebar(float x, float y, float w, float h) {
     ImVec2 o = ImGui::GetWindowPos();
     std::string title = guild_ && store_.guilds.count(guild_) ? store_.guilds[guild_].name : "Direct messages";
     ImGui::PushFont(fonts_.semibold, kBody);
-    ImGui::SetCursorPos(ImVec2(16 * scale_, (header - ImGui::GetFontSize()) / 2));
-    ImGui::PushStyleColor(ImGuiCol_Text, c.heading);
-    ImGui::TextUnformatted(title.c_str());
-    ImGui::PopStyleColor();
+    Label(dl, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(o.x + 16 * scale_, o.y + (header - ImGui::GetFontSize()) / 2),
+          U32(c.heading), title, w - 32 * scale_, [this](const std::string& u) { return texture(u); });
     ImGui::PopFont();
     dl->AddLine(ImVec2(o.x, o.y + header - 1), ImVec2(o.x + w, o.y + header - 1), U32(c.border), 1);
 
@@ -360,6 +358,7 @@ void App::sidebar(float x, float y, float w, float h) {
 }
 
 void App::channelList(float w) {
+    ImageFor images = [this](const std::string& u) { return texture(u); };
     const Palette& c = Colours();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     float row = 32 * scale_, side = 8 * scale_;
@@ -398,11 +397,9 @@ void App::channelList(float w) {
         ImGui::PopFont();
         ImGui::PushFont(unread || selected ? fonts_.semibold : fonts_.regular, kBody);
         float right = mentions ? 28 * scale_ : 4 * scale_;
-        std::string name = ch.name;
         float avail = b.x - right - (a.x + 30 * scale_);
-        while (!name.empty() && ImGui::CalcTextSize(name.c_str()).x > avail) name.pop_back();
-        if (name.size() < ch.name.size()) name += "…";
-        dl->AddText(ImVec2(a.x + 30 * scale_, a.y + (row - ImGui::GetFontSize()) / 2), col, name.c_str());
+        Label(dl, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(a.x + 30 * scale_, a.y + (row - ImGui::GetFontSize()) / 2), col,
+              ch.name, avail, images);
         ImGui::PopFont();
         if (mentions) {
             std::string n = std::to_string(mentions);
@@ -421,6 +418,7 @@ void App::channelList(float w) {
 }
 
 void App::dmList(float w) {
+    ImageFor images = [this](const std::string& u) { return texture(u); };
     const Palette& c = Colours();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     float row = 42 * scale_, side = 8 * scale_, av = 32 * scale_;
@@ -461,12 +459,10 @@ void App::dmList(float w) {
         std::string name = store_.ChannelName(id);
         ImGui::PushFont(unread || selected ? fonts_.semibold : fonts_.regular, kBody);
         float tx = ap.x + av + 12 * scale_, avail = b.x - tx - (mentions ? 28 * scale_ : 4 * scale_);
-        std::string shown = name;
-        while (!shown.empty() && ImGui::CalcTextSize(shown.c_str()).x > avail) shown.pop_back();
-        if (shown.size() < name.size()) shown += "…";
         float ty = a.y + (row - ImGui::GetFontSize()) / 2;
         if (ch.type == chan::GroupDM) ty -= 7 * scale_;
-        dl->AddText(ImVec2(tx, ty), selected || unread ? U32(c.heading) : U32(hov ? c.text : c.muted), shown.c_str());
+        Label(dl, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(tx, ty),
+              selected || unread ? U32(c.heading) : U32(hov ? c.text : c.muted), name, avail, images);
         ImGui::PopFont();
         if (ch.type == chan::GroupDM) {
             ImGui::PushFont(fonts_.regular, 12);
@@ -537,6 +533,7 @@ void App::avatar(uint64_t user, uint64_t guild, ImVec2 at, float size, bool stat
 // --- member list ---
 
 void App::memberList(float x, float y, float w, float h) {
+    ImageFor images = [this](const std::string& u) { return texture(u); };
     const Palette& c = Colours();
     ImGui::SetCursorPos(ImVec2(x, y));
     ImGui::PushStyleColor(ImGuiCol_ChildBg, c.sidebar);
@@ -559,11 +556,8 @@ void App::memberList(float x, float y, float w, float h) {
         std::string name = store_.DisplayName(guild_, uid);
         ImGui::PushFont(fonts_.semibold, kBody);
         float tx = a.x + av + 20 * scale_, avail = a.x + w - side * 2 - tx - 4 * scale_;
-        std::string shown = name;
-        while (!shown.empty() && ImGui::CalcTextSize(shown.c_str()).x > avail) shown.pop_back();
-        if (shown.size() < name.size()) shown += "…";
-        dl->AddText(ImVec2(tx, a.y + (row - ImGui::GetFontSize()) / 2), U32(ImGui::ColorConvertU32ToFloat4(userColour(guild_, uid)), offline ? 0.4f : 1.0f),
-                    shown.c_str());
+        Label(dl, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(tx, a.y + (row - ImGui::GetFontSize()) / 2),
+              U32(ImGui::ColorConvertU32ToFloat4(userColour(guild_, uid)), offline ? 0.4f : 1.0f), name, avail, images);
         ImGui::PopFont();
         if (offline) ImGui::PopStyleVar();
         if (const User* u = store_.FindUser(uid); hov && u) ImGui::SetTooltip("%s", u->username.c_str());
@@ -605,7 +599,9 @@ void App::memberList(float x, float y, float w, float h) {
                     std::transform(name.begin(), name.end(), name.begin(), ::toupper);
                     ImGui::SetCursorPos(ImVec2(side + 8 * scale_, yy + 16 * scale_));
                     ImGui::PushFont(fonts_.semibold, 12);
-                    ImGui::TextDisabled("%s — %d", name.c_str(), it.count);
+                    int count = it.count;
+                    if (auto gc = list.groupCounts.find(it.group); gc != list.groupCounts.end()) count = gc->second;
+                    ImGui::TextDisabled("%s — %d", name.c_str(), count);
                     ImGui::PopFont();
                 } else {
                     member(it.userId, it.status);

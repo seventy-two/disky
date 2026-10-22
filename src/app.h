@@ -118,6 +118,9 @@ private:
     std::string channelTitle(uint64_t channel) const;
     bool canSend(uint64_t channel) const;
     uint64_t perms(uint64_t channel) const;
+    // viewSignature is who a channel's overwrites let see it, for matching
+    // channels that share a member list.
+    std::vector<std::pair<uint64_t, uint64_t>> viewSignature(uint64_t channel) const;
     std::string encodeMentions(const std::string& text) const;
 
     HWND hwnd_;

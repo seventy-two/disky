@@ -237,7 +237,37 @@ void App::Pump() {
     }
 }
 
+namespace {
+
+// shape describes JSON's structure without its values (set DISKY_SHAPE to
+// write READY's to %APPDATA%\\disky\\ready-shape.txt): keys and types,
+// the first element of arrays. For debugging Discord's payloads without
+// writing anyone's data down.
+void shape(const json& j, std::string& out, int depth, const std::string& indent) {
+    if (depth > 6) return;
+    if (j.is_object()) {
+        for (auto it = j.begin(); it != j.end(); ++it) {
+            out += indent + it.key() + ": " + it->type_name();
+            if (it->is_array()) out += "[" + std::to_string(it->size()) + "]";
+            out += "\n";
+            shape(*it, out, depth + 1, indent + "  ");
+        }
+    } else if (j.is_array() && !j.empty()) {
+        out += indent + "[0]: " + std::string(j[0].type_name()) + "\n";
+        shape(j[0], out, depth + 1, indent + "  ");
+    }
+}
+
+}  // namespace
+
 void App::onDispatch(const Dispatch& d) {
+    if (d.type == "READY" && GetEnvironmentVariableW(L"DISKY_SHAPE", nullptr, 0)) {
+        std::string out;
+        shape(d.data, out, 0, "");
+        wchar_t path[MAX_PATH];
+        ExpandEnvironmentStringsW(L"%APPDATA%\\disky\\ready-shape.txt", path, MAX_PATH);
+        std::ofstream(path, std::ios::binary) << out;
+    }
     if (d.type.empty()) {
         if (d.data.value("auth_failed", false)) {
             loginError_ = "Discord signed this session out. Sign in again.";
@@ -251,7 +281,10 @@ void App::onDispatch(const Dispatch& d) {
         // The first list sent for the guild after subscribing is the open
         // channel's.
         uint64_t gid = ParseId(d.data["guild_id"]);
-        if (gid == guild_ && subscribedChannel_ && !listFor_.count(subscribedChannel_))
+        bool sync = false;
+        for (const auto& op : d.data.value("ops", json::array()))
+            if (op.value("op", "") == "SYNC") sync = true;
+        if (gid == guild_ && subscribedChannel_ && (sync || !listFor_.count(subscribedChannel_)))
             listFor_[subscribedChannel_] = d.data.value("id", "");
     }
     auto effects = store_.Apply(d.type, d.data);
@@ -353,7 +386,19 @@ void App::open(uint64_t guild, uint64_t channel) {
     newSince_ = store_.reads.count(channel) ? store_.reads[channel].lastAcked : 0;
     Messages& ms = store_.messages[channel];
     if (!ms.loaded && !ms.loading) loadLatest(channel);
-    if (guild && subscribedChannel_ != channel) subscribe(guild, channel, 1);
+    if (guild && subscribedChannel_ != channel) {
+        // Channels everyone sees alike share a member list, and Discord
+        // doesn't send one again that we already have: borrow it.
+        if (!listFor_.count(channel)) {
+            auto sig = viewSignature(channel);
+            for (const auto& [other, id] : listFor_)
+                if (store_.channels.count(other) && store_.channels[other].guildId == guild && viewSignature(other) == sig) {
+                    listFor_[channel] = id;
+                    break;
+                }
+        }
+        subscribe(guild, channel, 1);
+    }
 }
 
 void App::loadLatest(uint64_t channel) {
@@ -685,6 +730,18 @@ bool App::pasteImage() {
 }
 
 // --- helpers ---
+
+std::vector<std::pair<uint64_t, uint64_t>> App::viewSignature(uint64_t channel) const {
+    std::vector<std::pair<uint64_t, uint64_t>> sig;
+    auto c = store_.channels.find(channel);
+    if (c == store_.channels.end()) return sig;
+    for (const auto& o : c->second.overwrites) {
+        uint64_t bits = (o.allow & perm::ViewChannel ? 1 : 0) | (o.deny & perm::ViewChannel ? 2 : 0);
+        if (bits) sig.push_back({o.id, bits});
+    }
+    std::sort(sig.begin(), sig.end());
+    return sig;
+}
 
 uint64_t App::perms(uint64_t channel) const { return store_.Permissions(channel, store_.me); }
 

@@ -57,6 +57,12 @@ using ImageFor = std::function<ImTextureID(const std::string& url)>;
 // it returns the piece under the mouse, if any.
 Hit Draw(const Layout& l, ImVec2 at, const ImageFor& images, const std::vector<int>& revealed);
 
+// Label draws one line of plain text with any emoji as images, cut short
+// with an ellipsis past maxWidth (0 for no limit). It returns the width
+// drawn. With dl null it only measures.
+float Label(ImDrawList* dl, ImFont* font, float size, ImVec2 at, ImU32 colour, const std::string& text, float maxWidth,
+            const ImageFor& images);
+
 // PlainText turns content into one line of plain text, mentions named, for
 // notifications and reply previews.
 std::string PlainText(const std::string& content, const Resolver& names);

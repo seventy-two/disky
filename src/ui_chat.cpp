@@ -130,8 +130,9 @@ void App::chat(float x, float y, float w, float h) {
         tx += 22 * scale_;
     }
     float ty = (header - ImGui::GetFontSize()) / 2;
-    dl->AddText(ImVec2(o.x + tx, o.y + ty), U32(c.heading), title.c_str());
-    tx += ImGui::CalcTextSize(title.c_str()).x + 12 * scale_;
+    tx += Label(dl, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(o.x + tx, o.y + ty), U32(c.heading), title, w * 0.5f,
+                [this](const std::string& u) { return texture(u); }) +
+          12 * scale_;
     ImGui::PopFont();
     bool hasMembers = guild_ || ch.type == chan::GroupDM;
     float right = hasMembers ? 48 * scale_ : 12 * scale_;
@@ -372,8 +373,9 @@ void App::message(const Message& m, bool groupStart, float w, float h) {
         avatar(m.authorId, m.guildId, ImVec2(o.x + 16 * scale_, y), 40 * scale_);
         ImGui::PushFont(fonts_.semibold, kBody);
         float nx = o.x + left;
-        dl->AddText(ImVec2(nx, y), userColour(m.guildId, m.authorId), author.c_str());
-        nx += ImGui::CalcTextSize(author.c_str()).x + 8 * scale_;
+        nx += Label(dl, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(nx, y), userColour(m.guildId, m.authorId), author, 0,
+                    [this](const std::string& u) { return texture(u); }) +
+              8 * scale_;
         ImGui::PopFont();
         if (const User* u = store_.FindUser(m.authorId); u && u->bot) {
             ImGui::PushFont(fonts_.semibold, 10);
