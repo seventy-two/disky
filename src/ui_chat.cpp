@@ -255,6 +255,10 @@ void App::messages(float w, float h) {
         firstShown_ = rows.front().m->id;
         firstShownY_ = rows.front().y;
     }
+    // The height's known now, so tell ImGui: otherwise it limits the
+    // scroll to last frame's height, and a new message spends a frame
+    // below the view. (The +1 is the Dummy that ends the list.)
+    ImGui::SetNextWindowContentSize(ImVec2(0, total + 1));
     ImGui::BeginChild("messages", ImVec2(w, h), 0, ImGuiWindowFlags_AlwaysVerticalScrollbar);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     float scroll = ImGui::GetScrollY();
