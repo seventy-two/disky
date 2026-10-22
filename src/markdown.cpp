@@ -44,6 +44,16 @@ const EmojiEntry* EmojiByName(std::string_view name) {
     return it == index.end() ? nullptr : it->second;
 }
 
+const EmojiEntry* EmojiByChar(std::string_view emoji) {
+    static const auto index = [] {
+        std::unordered_map<std::string, const EmojiEntry*> m;
+        for (const auto& e : EmojiTable()) m.emplace(TwemojiName(e.emoji), &e);
+        return m;
+    }();
+    auto it = index.find(TwemojiName(emoji));
+    return it == index.end() ? nullptr : it->second;
+}
+
 uint32_t DecodeUtf8(std::string_view s, size_t& i) {
     unsigned char c = (unsigned char)s[i];
     auto cont = [&](size_t k) { return i + k < s.size() && ((unsigned char)s[i + k] & 0xC0) == 0x80; };

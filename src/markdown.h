@@ -69,6 +69,9 @@ const std::vector<EmojiEntry>& EmojiTable();
 extern const char* const kEmojiCategories[9];
 // EmojiByName finds an emoji by shortcode ("thumbsup"); nullptr if none.
 const EmojiEntry* EmojiByName(std::string_view name);
+// EmojiByChar finds an emoji's entry from the emoji itself, with or without
+// U+FE0F; nullptr if it isn't in the table.
+const EmojiEntry* EmojiByChar(std::string_view emoji);
 // FirstName is an entry's main shortcode.
 std::string FirstName(const EmojiEntry& e);
 

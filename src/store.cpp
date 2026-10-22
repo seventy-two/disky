@@ -490,7 +490,7 @@ Message Store::ParseMessage(const json& j) {
         re.me = flag(r, "me");
         m.reactions.push_back(std::move(re));
     }
-    for (const auto& s : arr(j, "sticker_items")) m.stickers.push_back(str(s, "name"));
+    for (const auto& s : arr(j, "sticker_items")) m.stickers.push_back({id(s, "id"), str(s, "name"), num(s, "format_type", 1)});
     if (auto ref = j.find("message_reference"); ref != j.end() && ref->is_object() && num(*ref, "type") == 0 &&
                                                 (m.type == 19 || j.contains("referenced_message")))
         m.replyTo = id(*ref, "message_id");

@@ -906,11 +906,11 @@ std::string App::channelTitle(uint64_t channel) const {
 
 const Layout& App::layoutFor(const Message& m, float w) {
     Cached& c = layouts_[m.pending ? std::hash<std::string>()(m.nonce) : m.id];
-    size_t version = std::hash<std::string>()(m.content) ^ size_t(m.pending) ^ (size_t(m.failed) << 1);
+    size_t version = std::hash<std::string>()(m.content);
     if (c.width != w || c.version != version) {
         bool jumbo = false;
         auto paras = Parse(m.content, &jumbo);
-        c.layout = LayOut(paras, w, fonts_, resolver(m.guildId), scale_, jumbo, kBody, m.pending);
+        c.layout = LayOut(paras, w, fonts_, resolver(m.guildId), scale_, jumbo, kBody, false);
         c.width = w;
         c.version = version;
     }

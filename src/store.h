@@ -154,7 +154,12 @@ struct Message {
     std::vector<Reaction> reactions;
     std::vector<Snowflake> mentions, mentionRoles;
     bool mentionEveryone = false;
-    std::vector<std::string> stickers;  // names only
+    struct Sticker {
+        Snowflake id = 0;
+        std::string name;
+        int format = 1;  // 1 PNG, 2 APNG, 3 Lottie, 4 GIF
+    };
+    std::vector<Sticker> stickers;
     // A reply's original, as it was sent with the reply.
     Snowflake replyTo = 0;
     struct Reply {

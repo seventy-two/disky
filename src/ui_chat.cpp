@@ -13,6 +13,7 @@ namespace disky {
 namespace {
 
 constexpr int64_t kGroupGap = 7 * 60 * 1000;  // messages closer than this share a header
+constexpr float stickerSize = 128;
 
 bool normalType(int t) { return t == 0 || t == 19 || t == 20 || t == 21 || t == 23; }
 
@@ -177,7 +178,7 @@ float App::messageHeight(const Message& m, bool groupStart, float w) {
     if (!m.content.empty()) h += layoutFor(m, contentW).height;
     h += attachmentsHeight(m, contentW);
     for (const auto& e : m.embeds) h += embedHeight(e, contentW) + 4 * scale_;
-    h += m.stickers.size() * 22 * scale_;
+    h += m.stickers.size() * (stickerSize + 4) * scale_;
     h += reactionsHeight(m, contentW);
     if (m.failed) h += 20 * scale_;
     return h + 2 * scale_;
@@ -464,10 +465,19 @@ void App::message(const Message& m, bool groupStart, bool alt, float w, float h)
         embed(m, m.embeds[i], o.x + left, y + 2 * scale_, contentW);
         y += embedHeight(m.embeds[i], contentW) + 4 * scale_;
     }
-    for (const auto& s : m.stickers) {
-        std::string t = "Sticker: " + s;
-        dl->AddText(ImVec2(o.x + left, y + 2 * scale_), U32(c.muted), t.c_str());
-        y += 22 * scale_;
+    for (const auto& st : m.stickers) {
+        // Lottie stickers are vector animations: just the name for those.
+        float sz = stickerSize * scale_;
+        ImVec2 sa(o.x + left, y + 2 * scale_);
+        ImTextureID t = st.format == 3 ? ImTextureID(0)
+                                       : texture("https://media.discordapp.net/stickers/" + IdString(st.id) +
+                                                 (st.format == 4 ? ".gif" : ".png") + "?size=160");
+        if (t)
+            dl->AddImage(ImTextureRef(t), sa, ImVec2(sa.x + sz, sa.y + sz));
+        else
+            dl->AddText(ImVec2(sa.x, sa.y), U32(c.muted), ("Sticker: " + st.name).c_str());
+        if (ImGui::IsMouseHoveringRect(sa, ImVec2(sa.x + sz, sa.y + sz)) && hov) ImGui::SetTooltip("%s", st.name.c_str());
+        y += sz + 4 * scale_;
     }
     reactions(m, o.x + left, y, contentW);
     y += reactionsHeight(m, contentW);
@@ -906,7 +916,14 @@ void App::reactions(const Message& m, float x, float y, float w) {
         if (ImTextureID t = texture(url))
             dl->AddImage(ImTextureRef(t), ia, ImVec2(ia.x + img, ia.y + img));
         dl->AddText(ImVec2(ia.x + img + 5 * scale_, a.y + (ph - ImGui::GetFontSize()) / 2), r.me ? U32(c.heading) : U32(c.muted), n.c_str());
-        if (hov) ImGui::SetTooltip(":%s:", r.emoji.id ? r.emoji.name.c_str() : r.emoji.name.c_str());
+        if (hov) {
+            // By name: the emoji itself isn't in the font, so it would
+            // leave the tooltip blank and too wide.
+            std::string name = r.emoji.name;
+            if (!r.emoji.id)
+                if (const EmojiEntry* e = EmojiByChar(r.emoji.name)) name = FirstName(*e);
+            ImGui::SetTooltip(":%s:", name.c_str());
+        }
         if (clicked && canReact && !m.pending) react(m.channelId, m.id, r.emoji, !r.me);
         cx += pw + gap;
     }
@@ -1057,17 +1074,17 @@ void App::composer(float x, float y, float w, float* height) {
     float top = o.y + y;
 
     if (!canSend(channel_)) {
-        float bh = 44 * scale_;
-        ImVec2 a(boxX, top + 4 * scale_);
+        float bh = 32 * scale_;
+        ImVec2 a(boxX, top);
         dl->AddRectFilled(a, ImVec2(a.x + boxW, a.y + bh), U32(c.input));
         dl->AddText(ImVec2(a.x + 16 * scale_, a.y + (bh - ImGui::GetFontSize()) / 2), U32(c.muted),
                     "You can't send messages in this channel.");
-        *height = bh + 28 * scale_;
+        *height = bh + 18 * scale_;
         return;
     }
 
     // Bars above the box: replying, editing, attachments, errors.
-    float barH = 30 * scale_;
+    float barH = 24 * scale_;
     auto bar = [&](const std::string& text, bool* cancel) {
         ImVec2 a(boxX, top + used);
         dl->AddRectFilled(a, ImVec2(a.x + boxW, a.y + barH), U32(c.sidebar));
@@ -1130,16 +1147,16 @@ void App::composer(float x, float y, float w, float* height) {
     }
 
     // The box: attach button, text, emoji button.
-    float btn = 44 * scale_;
+    float btn = 32 * scale_, base = 32 * scale_;  // the box's height with one line
     float textW = boxW - btn * 2;
     float textH = ImGui::CalcTextSize(draft_.data(), nullptr, false, textW - 20 * scale_).y;
     float lineH = ImGui::GetFontSize();
-    float boxH = std::clamp(textH + 22 * scale_, 44 * scale_, std::max(44 * scale_, ImGui::GetMainViewport()->Size.y * 0.4f));
-    if (draft_[0] == 0) boxH = 44 * scale_;
+    float boxH = std::clamp(textH + (base - lineH) + 1, base, std::max(base, ImGui::GetMainViewport()->Size.y * 0.4f));
+    if (draft_[0] == 0) boxH = base;
     ImVec2 a(boxX, top + used);
     dl->AddRectFilled(a, ImVec2(a.x + boxW, a.y + boxH), U32(c.input));
-    ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + (44 * scale_ - btn) / 2));
-    if (iconButton("attach", icon::Attach, ImVec2(btn, btn), 18, fonts_.regular, "Attach files")) {
+    ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + (base - btn) / 2));
+    if (iconButton("attach", icon::Attach, ImVec2(btn, btn), 15, fonts_.regular, "Attach files")) {
         wchar_t buf[8192] = {};
         OPENFILENAMEW ofn{sizeof(ofn)};
         ofn.hwndOwner = hwnd_;
@@ -1156,8 +1173,8 @@ void App::composer(float x, float y, float w, float* height) {
             }
         }
     }
-    ImGui::SetCursorScreenPos(ImVec2(a.x + boxW - btn, a.y + (44 * scale_ - btn) / 2));
-    if (iconButton("emoji", icon::Emoji, ImVec2(btn, btn), 18, fonts_.regular, "Emoji")) {
+    ImGui::SetCursorScreenPos(ImVec2(a.x + boxW - btn, a.y + (base - btn) / 2));
+    if (iconButton("emoji", icon::Emoji, ImVec2(btn, btn), 15, fonts_.regular, "Emoji")) {
         pickerMessage_ = 0;
         pickerAt_ = ImVec2(a.x + boxW, a.y);
         pickerOpen_ = true;
@@ -1215,14 +1232,17 @@ void App::composer(float x, float y, float w, float* height) {
         GetForegroundWindow() == hwnd_ && !ImGui::GetIO().KeyCtrl && !ImGui::GetIO().InputQueueCharacters.empty())
         focusComposer_ = true;
 
-    ImGui::SetCursorScreenPos(ImVec2(a.x + btn, a.y + (44 * scale_ - lineH) / 2 - ImGui::GetStyle().FramePadding.y));
+    // The text box fills the box exactly, its padding centring one line,
+    // so it never needs a scrollbar until it's at its tallest.
+    float padY = (base - lineH) / 2;
+    ImGui::SetCursorScreenPos(ImVec2(a.x + btn, a.y));
     ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4 * scale_, ImGui::GetStyle().FramePadding.y));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4 * scale_, padY));
     if (focusComposer_) {
         ImGui::SetKeyboardFocusHere();
         focusComposer_ = false;
     }
-    bool sendIt = ImGui::InputTextMultiline("##draft", draft_.data(), draft_.size(), ImVec2(textW, boxH - (44 * scale_ - lineH) / 2),
+    bool sendIt = ImGui::InputTextMultiline("##draft", draft_.data(), draft_.size(), ImVec2(textW, boxH),
                                             ImGuiInputTextFlags_CtrlEnterForNewLine | ImGuiInputTextFlags_EnterReturnsTrue |
                                                 ImGuiInputTextFlags_WordWrap | ImGuiInputTextFlags_CallbackAlways |
                                                 ImGuiInputTextFlags_NoHorizontalScroll,
@@ -1232,10 +1252,10 @@ void App::composer(float x, float y, float w, float* height) {
     composerActive_ = ImGui::IsItemActive();
     if (draft_[0] == 0 && !composerActive_) {
         std::string hint = editing_ ? "Edit message" : "Message " + channelTitle(channel_);
-        dl->AddText(ImVec2(a.x + btn + 4 * scale_, a.y + (44 * scale_ - lineH) / 2), U32(c.muted), hint.c_str());
+        dl->AddText(ImVec2(a.x + btn + 4 * scale_, a.y + (base - lineH) / 2), U32(c.muted), hint.c_str());
     } else if (draft_[0] == 0) {
         std::string hint = "Message " + channelTitle(channel_);
-        dl->AddText(ImVec2(a.x + btn + 4 * scale_, a.y + (44 * scale_ - lineH) / 2), U32(c.muted, 0.6f), hint.c_str());
+        dl->AddText(ImVec2(a.x + btn + 4 * scale_, a.y + (base - lineH) / 2), U32(c.muted, 0.6f), hint.c_str());
     }
     if (sendIt) {
         send();
@@ -1261,10 +1281,10 @@ void App::composer(float x, float y, float w, float* height) {
     std::string typing = typingLine(channel_);
     if (!typing.empty()) {
         ImGui::PushFont(fonts_.regular, 12);
-        dl->AddText(ImVec2(boxX + 4 * scale_, top + used + 4 * scale_), U32(c.muted), typing.c_str());
+        dl->AddText(ImVec2(boxX + 4 * scale_, top + used + 2 * scale_), U32(c.muted), typing.c_str());
         ImGui::PopFont();
     }
-    *height = used + 24 * scale_;
+    *height = used + 18 * scale_;
 }
 
 }  // namespace disky

@@ -371,6 +371,11 @@ static void testEmoji() {
     if (e) CHECK_EQ(std::string(e->emoji), std::string("\xF0\x9F\x91\x8D"));
     CHECK(EmojiByName("+1") != nullptr);
     CHECK(EmojiByName("not_an_emoji") == nullptr);
+    // A heart with or without U+FE0F is the same emoji.
+    const EmojiEntry* heart = EmojiByChar("\xE2\x9D\xA4");
+    CHECK(heart != nullptr);
+    if (heart) CHECK_EQ(FirstName(*heart), std::string("heart"));
+    CHECK(EmojiByChar("\xE2\x9D\xA4\xEF\xB8\x8F") == heart);
 }
 
 int main() {
