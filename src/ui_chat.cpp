@@ -1,0 +1,1240 @@
+// Drawing the open channel: its header, messages with their replies,
+// attachments, embeds and reactions, and the composer.
+#include <windows.h>
+#include <commdlg.h>
+
+#include <algorithm>
+#include <cmath>
+
+#include "app.h"
+
+namespace disky {
+
+namespace {
+
+constexpr int64_t kGroupGap = 7 * 60 * 1000;  // messages closer than this share a header
+
+bool normalType(int t) { return t == 0 || t == 19 || t == 20 || t == 21 || t == 23; }
+
+std::string withParams(const std::string& url, const std::string& params) {
+    return url + (url.find('?') == std::string::npos ? "?" : "&") + params;
+}
+
+// fit scales a size down to fit a box, keeping its shape.
+ImVec2 fit(float w, float h, float maxW, float maxH) {
+    if (w <= 0 || h <= 0) return ImVec2(std::min(maxW, 200.0f), std::min(maxH, 150.0f));
+    float s = std::min({1.0f, maxW / w, maxH / h});
+    return ImVec2(std::floor(w * s), std::floor(h * s));
+}
+
+std::string fileSize(uint64_t n) {
+    char buf[32];
+    if (n >= (1u << 20)) snprintf(buf, sizeof(buf), "%.1f MB", n / 1048576.0);
+    else if (n >= 1024) snprintf(buf, sizeof(buf), "%.0f KB", n / 1024.0);
+    else snprintf(buf, sizeof(buf), "%llu bytes", (unsigned long long)n);
+    return buf;
+}
+
+std::string clock(double s) {
+    int t = int(s);
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d:%02d", t / 60, t % 60);
+    return buf;
+}
+
+bool sameDay(int64_t a, int64_t b) {
+    auto day = [](int64_t ms) {
+        ULARGE_INTEGER u;
+        u.QuadPart = uint64_t(ms) * 10000 + 116444736000000000ull;
+        FILETIME ft{u.LowPart, u.HighPart};
+        SYSTEMTIME utc, local;
+        FileTimeToSystemTime(&ft, &utc);
+        SystemTimeToTzSpecificLocalTime(nullptr, &utc, &local);
+        return local.wYear * 400 + local.wMonth * 32 + local.wDay;
+    };
+    return day(a) == day(b);
+}
+
+std::string dayLabel(int64_t ms) {
+    ULARGE_INTEGER u;
+    u.QuadPart = uint64_t(ms) * 10000 + 116444736000000000ull;
+    FILETIME ft{u.LowPart, u.HighPart};
+    SYSTEMTIME utc, t;
+    FileTimeToSystemTime(&ft, &utc);
+    SystemTimeToTzSpecificLocalTime(nullptr, &utc, &t);
+    static const char* months[] = {"January", "February", "March", "April", "May", "June", "July",
+                                   "August", "September", "October", "November", "December"};
+    char buf[48];
+    snprintf(buf, sizeof(buf), "%d %s %d", t.wDay, months[t.wMonth - 1], t.wYear);
+    return buf;
+}
+
+// iconButton is a flat button showing an icon glyph.
+bool iconButton(const char* id, const char* glyph, ImVec2 size, float fontSize, ImFont* font, const char* tip = nullptr) {
+    ImGui::PushID(id);
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    bool pressed = ImGui::InvisibleButton("b", size);
+    bool hov = ImGui::IsItemHovered();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const Palette& c = Colours();
+    if (hov) dl->AddRectFilled(a, ImVec2(a.x + size.x, a.y + size.y), U32(c.hover), 4);
+    ImGui::PushFont(font, fontSize);
+    ImVec2 sz = ImGui::CalcTextSize(glyph);
+    dl->AddText(ImVec2(a.x + (size.x - sz.x) / 2, a.y + (size.y - sz.y) / 2), U32(hov ? c.heading : c.muted), glyph);
+    ImGui::PopFont();
+    if (tip && hov) ImGui::SetTooltip("%s", tip);
+    ImGui::PopID();
+    return pressed;
+}
+
+}  // namespace
+
+const Layout& App::textLayout(const std::string& key, const std::string& text, float w, uint64_t guild, float size,
+                              bool muted) {
+    Cached& c = textLayouts_[key];
+    size_t version = std::hash<std::string>()(text) ^ size_t(size * 7);
+    if (c.width != w || c.version != version) {
+        c.layout = LayOut(Parse(text), w, fonts_, resolver(guild), scale_, false, size, muted);
+        c.width = w;
+        c.version = version;
+    }
+    return c.layout;
+}
+
+// --- the channel ---
+
+void App::chat(float x, float y, float w, float h) {
+    const Palette& c = Colours();
+    float header = 48 * scale_;
+    ImGui::SetCursorPos(ImVec2(x, y));
+    ImGui::BeginChild("chat", ImVec2(w, h), 0, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 o = ImGui::GetWindowPos();
+    if (!channel_) {
+        const char* text = guild_ ? "No channels you can read here." : "Pick a conversation.";
+        ImVec2 sz = ImGui::CalcTextSize(text);
+        ImGui::SetCursorPos(ImVec2((w - sz.x) / 2, (h - sz.y) / 2));
+        ImGui::TextDisabled("%s", text);
+        ImGui::EndChild();
+        return;
+    }
+    const Channel& ch = store_.channels[channel_];
+    // Header: the channel's name and topic, and the member list button.
+    ImGui::PushFont(fonts_.semibold, kBody);
+    std::string title = ch.IsPrivate() ? store_.ChannelName(channel_) : ch.name;
+    float tx = 16 * scale_;
+    if (!ch.IsPrivate()) {
+        ImGui::PushFont(fonts_.regular, 22);
+        dl->AddText(ImVec2(o.x + tx, o.y + (header - ImGui::GetFontSize()) / 2), U32(c.muted), "#");
+        ImGui::PopFont();
+        tx += 22 * scale_;
+    }
+    float ty = (header - ImGui::GetFontSize()) / 2;
+    dl->AddText(ImVec2(o.x + tx, o.y + ty), U32(c.heading), title.c_str());
+    tx += ImGui::CalcTextSize(title.c_str()).x + 12 * scale_;
+    ImGui::PopFont();
+    bool hasMembers = guild_ || ch.type == chan::GroupDM;
+    float right = hasMembers ? 48 * scale_ : 12 * scale_;
+    if (!ch.topic.empty()) {
+        std::string topic = ch.topic.substr(0, ch.topic.find('\n'));
+        ImGui::PushFont(fonts_.regular, 14);
+        float avail = w - right - tx - 12 * scale_;
+        if (avail > 60 * scale_) {
+            dl->AddLine(ImVec2(o.x + tx - 6 * scale_, o.y + 14 * scale_), ImVec2(o.x + tx - 6 * scale_, o.y + header - 14 * scale_), U32(c.border));
+            std::string shown = topic;
+            while (!shown.empty() && ImGui::CalcTextSize(shown.c_str()).x > avail) shown.pop_back();
+            if (shown.size() < topic.size()) shown += "…";
+            dl->AddText(ImVec2(o.x + tx + 6 * scale_, o.y + (header - ImGui::GetFontSize()) / 2), U32(c.muted), shown.c_str());
+        }
+        ImGui::PopFont();
+    }
+    if (hasMembers) {
+        ImGui::SetCursorPos(ImVec2(w - 44 * scale_, (header - 32 * scale_) / 2));
+        if (iconButton("members", icon::People, ImVec2(32 * scale_, 32 * scale_), 18, fonts_.regular,
+                       config_.members ? "Hide the member list" : "Show the member list")) {
+            config_.members = !config_.members;
+            SaveConfig(config_);
+        }
+    }
+    dl->AddLine(ImVec2(o.x, o.y + header - 1), ImVec2(o.x + w, o.y + header - 1), U32(c.border));
+
+    float composerH = composerH_ > 0 ? composerH_ : 68 * scale_;
+    ImGui::SetCursorPos(ImVec2(0, header));
+    messages(w, h - header - composerH);
+    composer(0, h - composerH, w, &composerH_);
+    ImGui::EndChild();
+}
+
+// --- messages ---
+
+float App::messageHeight(const Message& m, bool groupStart, float w) {
+    float contentW = w - 88 * scale_;
+    float h = (groupStart ? 16 : 2) * scale_;
+    if (m.reply) h += 22 * scale_;
+    if (groupStart) h += 22 * scale_;
+    if (!normalType(m.type)) return h + 2 * scale_ - (groupStart ? 0 : 0);
+    if (!m.content.empty()) h += layoutFor(m, contentW).height;
+    h += attachmentsHeight(m, contentW);
+    for (const auto& e : m.embeds) h += embedHeight(e, contentW) + 4 * scale_;
+    h += m.stickers.size() * 22 * scale_;
+    h += reactionsHeight(m, contentW);
+    if (m.failed) h += 20 * scale_;
+    return h + 2 * scale_;
+}
+
+void App::messages(float w, float h) {
+    const Palette& c = Colours();
+    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 10 * scale_);
+    ImGui::BeginChild("messages", ImVec2(w, h), 0);
+    float cw = ImGui::GetContentRegionAvail().x;
+    Messages& ms = store_.messages[channel_];
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (!ms.loaded) {
+        const char* t = "Loading…";
+        ImVec2 sz = ImGui::CalcTextSize(t);
+        ImGui::SetCursorPos(ImVec2((cw - sz.x) / 2, (h - sz.y) / 2));
+        ImGui::TextDisabled("%s", t);
+        ImGui::EndChild();
+        ImGui::PopStyleVar();
+        return;
+    }
+
+    // Lay everything out: each message's height, with day lines and the
+    // "new" line between.
+    struct Row {
+        const Message* m;
+        bool groupStart;
+        float y, h;
+        bool day, fresh;
+    };
+    std::vector<Row> rows;
+    rows.reserve(ms.list.size());
+    float top = ms.reachedStart ? 96 * scale_ : 48 * scale_;
+    float y = top;
+    bool freshShown = false;
+    const Message* prev = nullptr;
+    for (const auto& m : ms.list) {
+        bool day = !prev || !sameDay(prev->timestamp, m.timestamp);
+        bool fresh = !freshShown && newSince_ && m.id > newSince_ && !m.pending && m.authorId != store_.me;
+        if (fresh) freshShown = true;
+        bool gs = !prev || day || fresh || prev->authorId != m.authorId || m.timestamp - prev->timestamp > kGroupGap ||
+                  m.reply.has_value() || !normalType(m.type) || !normalType(prev->type);
+        if (day || fresh) y += 24 * scale_;
+        float mh = messageHeight(m, gs, cw);
+        rows.push_back({&m, gs, y, mh, day, fresh});
+        y += mh;
+        prev = &m;
+    }
+    float total = y + 16 * scale_;
+
+    // Keep the view still when older messages arrive above it.
+    float scroll = ImGui::GetScrollY();
+    if (!atBottom_ && firstShown_ && !rows.empty() && rows.front().m->id != firstShown_) {
+        for (const auto& r : rows)
+            if (r.m->id == firstShown_) {
+                scroll += r.y - firstShownY_;
+                ImGui::SetScrollY(scroll);
+                break;
+            }
+    }
+    if (!rows.empty()) {
+        firstShown_ = rows.front().m->id;
+        firstShownY_ = rows.front().y;
+    }
+
+    float view = ImGui::GetWindowHeight();
+    hovered_ = 0;
+    if (ms.reachedStart) {
+        ImGui::SetCursorPos(ImVec2(16 * scale_, 24 * scale_));
+        ImGui::PushFont(fonts_.bold, kH1);
+        ImGui::PushStyleColor(ImGuiCol_Text, c.heading);
+        const Channel& ch = store_.channels[channel_];
+        ImGui::Text("%s%s", ch.IsPrivate() ? "" : "Welcome to #", ch.IsPrivate() ? store_.ChannelName(channel_).c_str() : ch.name.c_str());
+        ImGui::PopStyleColor();
+        ImGui::PopFont();
+        ImGui::SetCursorPosX(16 * scale_);
+        ImGui::TextDisabled(ch.IsPrivate() ? "This is the beginning of your conversation." : "This is the start of the channel.");
+    } else {
+        ImGui::SetCursorPos(ImVec2(16 * scale_, 16 * scale_));
+        ImGui::TextDisabled("Loading older messages…");
+    }
+    for (const auto& r : rows) {
+        float above = (r.day || r.fresh) ? 24 * scale_ : 0;
+        if (r.y + r.h < scroll - 200 * scale_ || r.y - above > scroll + view + 200 * scale_) continue;
+        if (r.day || r.fresh) {
+            ImVec2 o = ImGui::GetWindowPos();
+            float ly = o.y + r.y - above / 2 - scroll + (r.groupStart ? 4 * scale_ : 0);
+            ImU32 col = r.fresh ? U32(c.dnd) : U32(c.border);
+            dl->AddLine(ImVec2(o.x + 16 * scale_, ly), ImVec2(o.x + cw - 16 * scale_, ly), col);
+            ImGui::PushFont(fonts_.semibold, 12);
+            if (r.day) {
+                std::string label = dayLabel(r.m->timestamp);
+                ImVec2 sz = ImGui::CalcTextSize(label.c_str());
+                ImVec2 la(o.x + (cw - sz.x) / 2, ly - sz.y / 2);
+                dl->AddRectFilled(ImVec2(la.x - 6 * scale_, la.y), ImVec2(la.x + sz.x + 6 * scale_, la.y + sz.y), U32(c.bg));
+                dl->AddText(la, U32(c.muted), label.c_str());
+            }
+            if (r.fresh) {
+                ImVec2 sz = ImGui::CalcTextSize("NEW");
+                ImVec2 la(o.x + cw - 16 * scale_ - sz.x - 8 * scale_, ly - sz.y / 2);
+                dl->AddRectFilled(ImVec2(la.x - 4 * scale_, la.y), ImVec2(la.x + sz.x + 4 * scale_, la.y + sz.y), U32(c.dnd), 3 * scale_);
+                dl->AddText(la, IM_COL32_WHITE, "NEW");
+            }
+            ImGui::PopFont();
+        }
+        ImGui::SetCursorPos(ImVec2(0, r.y));
+        message(*r.m, r.groupStart, cw, r.h);
+    }
+    ImGui::SetCursorPos(ImVec2(0, total));
+    ImGui::Dummy(ImVec2(1, 1));
+
+    // Scrolling: stay at the bottom unless the reader has scrolled up.
+    ImGuiIO& io = ImGui::GetIO();
+    ImGuiWindow* win = ImGui::GetCurrentWindow();
+    bool userScrolled = (ImGui::IsWindowHovered() && io.MouseWheel != 0) ||
+                        ImGui::GetActiveID() == ImGui::GetWindowScrollbarID(win, ImGuiAxis_Y) ||
+                        (ImGui::IsWindowFocused() && (ImGui::IsKeyPressed(ImGuiKey_PageUp) || ImGui::IsKeyPressed(ImGuiKey_PageDown)));
+    float maxY = std::max(0.0f, total - view);
+    if (userScrolled) atBottom_ = scroll >= maxY - 4 * scale_ && io.MouseWheel <= 0;
+    else if (!atBottom_ && scroll >= maxY - 2 && maxY > 0) atBottom_ = true;
+    if (atBottom_) ImGui::SetScrollY(maxY);
+    if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(ImGuiKey_PageUp)) ImGui::SetScrollY(scroll - view * 0.8f);
+    if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(ImGuiKey_PageDown)) ImGui::SetScrollY(scroll + view * 0.8f);
+    if (scroll < 600 * scale_ && !ms.reachedStart && !ms.loadingOlder && (!atBottom_ || total < view + 600 * scale_))
+        loadOlder(channel_);
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+
+    // Far up the history: a way back.
+    if (!atBottom_ && scroll < maxY - view * 1.5f) {
+        ImVec2 o = ImGui::GetItemRectMin();
+        float bw = 170 * scale_, bh = 28 * scale_;
+        ImGui::SetCursorScreenPos(ImVec2(o.x + (w - bw) / 2, o.y + h - bh - 10 * scale_));
+        ImGui::PushStyleColor(ImGuiCol_Button, c.accent);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, c.accent);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, bh / 2);
+        if (ImGui::Button("Jump to present", ImVec2(bw, bh))) atBottom_ = true;
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor(2);
+    }
+}
+
+void App::message(const Message& m, bool groupStart, float w, float h) {
+    const Palette& c = Colours();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 o = ImGui::GetCursorScreenPos();
+    float left = 72 * scale_, contentW = w - 88 * scale_;
+    float y = o.y + (groupStart ? 16 : 2) * scale_;
+    float rowTop = o.y + (groupStart ? 12 : 0) * scale_;
+    ImVec2 mouse = ImGui::GetMousePos();
+    bool hov = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) && mouse.y >= rowTop &&
+               mouse.y < o.y + h && mouse.x >= o.x && mouse.x < o.x + w && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
+    bool mentioned = store_.MentionsMe(m) || (m.reply && m.reply->authorId == store_.me && m.authorId != store_.me);
+    if (mentioned) {
+        dl->AddRectFilled(ImVec2(o.x, rowTop), ImVec2(o.x + w, o.y + h), U32(c.mention));
+        dl->AddRectFilled(ImVec2(o.x, rowTop), ImVec2(o.x + 2 * scale_, o.y + h), U32(c.mentionBar));
+    }
+    if (hov || contextMessage_ == m.id) {
+        hovered_ = m.id;
+        dl->AddRectFilled(ImVec2(o.x, rowTop), ImVec2(o.x + w, o.y + h), U32(c.hover, mentioned ? 0.5f : 1.0f));
+    }
+    std::string author = store_.DisplayName(m.guildId, m.authorId);
+
+    // The reply's original, in a line above.
+    if (m.reply) {
+        ImGui::PushFont(fonts_.regular, 13);
+        float ry = y + 4 * scale_;
+        dl->AddBezierCubic(ImVec2(o.x + 36 * scale_, y + 18 * scale_), ImVec2(o.x + 36 * scale_, ry + 2 * scale_),
+                           ImVec2(o.x + 40 * scale_, ry + 2 * scale_), ImVec2(o.x + 66 * scale_, ry + 2 * scale_),
+                           U32(c.muted, 0.6f), 2 * scale_);
+        float rx = o.x + left;
+        if (m.reply->deleted) {
+            dl->AddText(ImVec2(rx, ry - 6 * scale_), U32(c.muted), "Original message was deleted");
+        } else {
+            avatar(m.reply->authorId, m.guildId, ImVec2(rx, ry - 6 * scale_), 16 * scale_);
+            rx += 20 * scale_;
+            std::string name = "@" + store_.DisplayName(m.guildId, m.reply->authorId);
+            ImGui::PushFont(fonts_.semibold, 13);
+            dl->AddText(ImVec2(rx, ry - 6 * scale_), userColour(m.guildId, m.reply->authorId), name.c_str());
+            rx += ImGui::CalcTextSize(name.c_str()).x + 6 * scale_;
+            ImGui::PopFont();
+            std::string text = PlainText(m.reply->content, resolver(m.guildId));
+            if (text.empty()) text = m.reply->attachments ? "Click to see attachment" : "";
+            float avail = o.x + w - 16 * scale_ - rx;
+            while (!text.empty() && ImGui::CalcTextSize(text.c_str()).x > avail) text.resize(text.size() * 9 / 10);
+            dl->AddText(ImVec2(rx, ry - 6 * scale_), U32(c.muted), text.c_str());
+        }
+        ImGui::PopFont();
+        y += 22 * scale_;
+    }
+
+    if (groupStart) {
+        avatar(m.authorId, m.guildId, ImVec2(o.x + 16 * scale_, y), 40 * scale_);
+        ImGui::PushFont(fonts_.semibold, kBody);
+        float nx = o.x + left;
+        dl->AddText(ImVec2(nx, y), userColour(m.guildId, m.authorId), author.c_str());
+        nx += ImGui::CalcTextSize(author.c_str()).x + 8 * scale_;
+        ImGui::PopFont();
+        if (const User* u = store_.FindUser(m.authorId); u && u->bot) {
+            ImGui::PushFont(fonts_.semibold, 10);
+            ImVec2 sz = ImGui::CalcTextSize("APP");
+            dl->AddRectFilled(ImVec2(nx, y + 3 * scale_), ImVec2(nx + sz.x + 8 * scale_, y + 3 * scale_ + sz.y + 2 * scale_), U32(c.accent), 3 * scale_);
+            dl->AddText(ImVec2(nx + 4 * scale_, y + 4 * scale_), IM_COL32_WHITE, "APP");
+            ImGui::PopFont();
+            nx += sz.x + 14 * scale_;
+        }
+        ImGui::PushFont(fonts_.regular, 12);
+        std::string t = formatTime(m.timestamp, true);
+        dl->AddText(ImVec2(nx, y + 4 * scale_), U32(c.muted), t.c_str());
+        ImGui::PopFont();
+        y += 22 * scale_;
+    } else if (hov && normalType(m.type)) {
+        ImGui::PushFont(fonts_.regular, 11);
+        std::string t = formatTime(m.timestamp, false);
+        dl->AddText(ImVec2(o.x + 22 * scale_, y + 4 * scale_), U32(c.muted), t.c_str());
+        ImGui::PopFont();
+    }
+
+    if (!normalType(m.type)) {
+        static const std::map<int, const char*> lines = {
+            {1, "added someone to the group."},  {2, "left the group."},
+            {3, "started a call."},              {4, "changed the channel name."},
+            {5, "changed the channel icon."},    {6, "pinned a message to this channel."},
+            {7, "joined the server."},           {8, "boosted the server!"},
+            {9, "boosted the server to level 1!"}, {10, "boosted the server to level 2!"},
+            {11, "boosted the server to level 3!"}, {12, "followed a channel here."},
+            {18, "started a thread."},
+        };
+        auto it = lines.find(m.type);
+        ImGui::PushFont(fonts_.semibold, kBody);
+        dl->AddText(ImVec2(o.x + left, y), userColour(m.guildId, m.authorId), author.c_str());
+        float nx = o.x + left + ImGui::CalcTextSize(author.c_str()).x + 6 * scale_;
+        ImGui::PopFont();
+        std::string line = it != lines.end() ? it->second : (m.content.empty() ? "did something Discord didn't explain." : m.content);
+        dl->AddText(ImVec2(nx, y), U32(c.muted), line.c_str());
+        ImGui::PushFont(fonts_.regular, 12);
+        std::string t = formatTime(m.timestamp, true);
+        dl->AddText(ImVec2(nx + ImGui::CalcTextSize(line.c_str()).x * 1.25f + 8 * scale_, y + 3 * scale_), U32(c.muted), t.c_str());
+        ImGui::PopFont();
+        return;
+    }
+
+    // Content.
+    if (!m.content.empty()) {
+        const Layout& l = layoutFor(m, contentW);
+        auto& revealed = revealed_[m.id];
+        Hit hit = Draw(l, ImVec2(o.x + left, y), [this](const std::string& url) { return texture(url); }, revealed);
+        if (m.edited && !l.pieces.empty()) {
+            const Piece& last = l.pieces.back();
+            ImGui::PushFont(fonts_.regular, 11);
+            dl->AddText(ImVec2(o.x + left + last.pos.x + last.size.x + 4 * scale_, y + last.pos.y + last.size.y - ImGui::GetFontSize() - 2 * scale_),
+                        U32(c.muted), "(edited)");
+            ImGui::PopFont();
+        }
+        if (hit.piece) {
+            const Piece& p = *hit.piece;
+            bool hidden = p.spoiler && std::find(revealed.begin(), revealed.end(), p.spoiler) == revealed.end();
+            if (hidden || !p.link.empty() || p.channel) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            if (!p.link.empty() && !hidden) ImGui::SetTooltip("%s", p.link.c_str());
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                if (hidden)
+                    revealed.push_back(p.spoiler);
+                else if (!p.link.empty())
+                    OpenURL(p.link);
+                else if (p.channel && store_.channels.count(p.channel) && store_.CanView(p.channel))
+                    open(store_.channels[p.channel].guildId, p.channel);
+            }
+        }
+        y += l.height;
+    }
+    attachments(m, o.x + left, y, contentW);
+    y += attachmentsHeight(m, contentW);
+    for (size_t i = 0; i < m.embeds.size(); i++) {
+        embed(m, m.embeds[i], o.x + left, y + 2 * scale_, contentW);
+        y += embedHeight(m.embeds[i], contentW) + 4 * scale_;
+    }
+    for (const auto& s : m.stickers) {
+        std::string t = "Sticker: " + s;
+        dl->AddText(ImVec2(o.x + left, y + 2 * scale_), U32(c.muted), t.c_str());
+        y += 22 * scale_;
+    }
+    reactions(m, o.x + left, y, contentW);
+    y += reactionsHeight(m, contentW);
+    if (m.failed) {
+        ImGui::PushFont(fonts_.regular, 13);
+        dl->AddText(ImVec2(o.x + left, y + 2 * scale_), U32(c.bad), "Not sent.");
+        ImGui::SetCursorScreenPos(ImVec2(o.x + left + 70 * scale_, y));
+        ImGui::PushID(int(std::hash<std::string>()(m.nonce) & 0x7FFFFFFF));
+        if (ImGui::SmallButton("Delete")) deleteMessage(m.channelId, m.id);
+        ImGui::PopID();
+        ImGui::PopFont();
+    }
+
+    if (hov && !m.pending) toolbar(m, ImVec2(o.x + w - 16 * scale_, rowTop));
+
+    // Right-click: everything the toolbar has, and copying.
+    std::string menuId = "msg" + IdString(m.id);
+    if (hov && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !m.pending) {
+        ImGui::OpenPopup(menuId.c_str());
+        contextMessage_ = m.id;
+    }
+    if (ImGui::BeginPopup(menuId.c_str())) {
+        bool mine = m.authorId == store_.me;
+        bool canManage = mine || (perms(m.channelId) & perm::ManageMessages);
+        if (ImGui::MenuItem("Add reaction")) {
+            pickerMessage_ = m.id;
+            pickerAt_ = ImGui::GetMousePos();
+            pickerOpen_ = true;
+        }
+        if (canSend(m.channelId) && ImGui::MenuItem("Reply")) {
+            replyTo_ = m.id;
+            editing_ = 0;
+            focusComposer_ = true;
+        }
+        if (mine && ImGui::MenuItem("Edit")) {
+            drafts_[channel_] = draft_.data();
+            std::fill(draft_.begin(), draft_.end(), 0);
+            strncpy(draft_.data(), m.content.c_str(), draft_.size() - 1);
+            editing_ = m.id;
+            replyTo_ = 0;
+            focusComposer_ = true;
+        }
+        if (!m.content.empty() && ImGui::MenuItem("Copy text")) ImGui::SetClipboardText(m.content.c_str());
+        std::string link = "https://discord.com/channels/" + (m.guildId ? IdString(m.guildId) : std::string("@me")) + "/" +
+                           IdString(m.channelId) + "/" + IdString(m.id);
+        if (ImGui::MenuItem("Copy message link")) ImGui::SetClipboardText(link.c_str());
+        if (canManage) {
+            ImGui::Separator();
+            ImGui::PushStyleColor(ImGuiCol_Text, c.bad);
+            if (ImGui::MenuItem("Delete message")) confirmDelete_ = m.id;
+            ImGui::PopStyleColor();
+        }
+        ImGui::EndPopup();
+    } else if (contextMessage_ == m.id) {
+        contextMessage_ = 0;
+    }
+
+    if (confirmDelete_ == m.id) {
+        ImGui::OpenPopup("Delete message?");
+        confirmDelete_ = 0;
+        contextMessage_ = m.id;
+    }
+    ImGui::SetNextWindowSize(ImVec2(380 * scale_, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20 * scale_, 16 * scale_));
+    if (contextMessage_ == m.id && ImGui::BeginPopupModal("Delete message?", nullptr, ImGuiWindowFlags_NoResize)) {
+        ImGui::TextWrapped("Delete this message? This can't be undone.");
+        ImGui::TextDisabled("Hold Shift when clicking the bin to skip this.");
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Button, c.bad);
+        if (ImGui::Button("Delete", ImVec2(100 * scale_, 0)) || ImGui::IsKeyPressed(ImGuiKey_Enter)) {
+            deleteMessage(m.channelId, m.id);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(100 * scale_, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+    ImGui::PopStyleVar();
+}
+
+void App::toolbar(const Message& m, ImVec2 topRight) {
+    const Palette& c = Colours();
+    bool mine = m.authorId == store_.me;
+    bool canManage = mine || (perms(m.channelId) & perm::ManageMessages);
+    bool canReact = !guild_ || (perms(m.channelId) & perm::AddReactions);
+    int n = (canReact ? 1 : 0) + (canSend(m.channelId) ? 1 : 0) + (mine ? 1 : 0) + (canManage ? 1 : 0);
+    if (n == 0) return;
+    float b = 32 * scale_, pad = 2 * scale_;
+    float w = n * b + pad * 2;
+    ImVec2 a(topRight.x - w, std::max(topRight.y - 14 * scale_, ImGui::GetWindowPos().y + 2 * scale_));
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + b + pad * 2), U32(c.bg), 6 * scale_);
+    dl->AddRect(a, ImVec2(a.x + w, a.y + b + pad * 2), U32(c.border), 6 * scale_);
+    float x = a.x + pad;
+    auto button = [&](const char* id, const char* glyph, const char* tip) {
+        ImGui::SetCursorScreenPos(ImVec2(x, a.y + pad));
+        x += b;
+        return iconButton(id, glyph, ImVec2(b, b), 18, fonts_.regular, tip);
+    };
+    ImGui::PushID(int(m.id & 0x7FFFFFFF));
+    if (canReact && button("react", icon::Emoji, "Add reaction")) {
+        pickerMessage_ = m.id;
+        pickerAt_ = ImVec2(x, a.y);
+        pickerOpen_ = true;
+    }
+    if (canSend(m.channelId) && button("reply", icon::Reply, "Reply")) {
+        replyTo_ = m.id;
+        editing_ = 0;
+        focusComposer_ = true;
+    }
+    if (mine && button("edit", icon::Edit, "Edit")) {
+        drafts_[channel_] = draft_.data();
+        std::fill(draft_.begin(), draft_.end(), 0);
+        strncpy(draft_.data(), m.content.c_str(), draft_.size() - 1);
+        editing_ = m.id;
+        replyTo_ = 0;
+        focusComposer_ = true;
+    }
+    if (canManage && button("delete", icon::Delete, "Delete (Shift to skip asking)")) {
+        if (ImGui::GetIO().KeyShift)
+            deleteMessage(m.channelId, m.id);
+        else
+            confirmDelete_ = m.id;
+    }
+    ImGui::PopID();
+}
+
+// --- attachments, embeds, media ---
+
+float App::attachmentsHeight(const Message& m, float w) {
+    float h = 0;
+    for (const auto& a : m.attachments) {
+        if (a.IsImage() || a.IsVideo())
+            h += fit(float(a.width), float(a.height), std::min(w, 400 * scale_), 300 * scale_).y + 4 * scale_;
+        else
+            h += 60 * scale_;
+    }
+    return h;
+}
+
+void App::attachments(const Message& m, float x, float y, float w) {
+    const Palette& c = Colours();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    for (const auto& a : m.attachments) {
+        if (a.IsImage() || a.IsVideo()) {
+            ImVec2 size = fit(float(a.width), float(a.height), std::min(w, 400 * scale_), 300 * scale_);
+            std::string base = a.proxyUrl.empty() ? a.url : a.proxyUrl;
+            int pw = int(size.x), ph = int(size.y);
+            std::string dims = "width=" + std::to_string(pw) + "&height=" + std::to_string(ph);
+            std::string still = base.empty() ? "" : a.IsVideo() ? withParams(base, "format=jpeg&" + dims) : withParams(base, dims);
+            media("a" + IdString(a.id), still, a.IsVideo() ? a.url : "", a.url, ImVec2(x, y + 2 * scale_), size, a.spoiler, false);
+            y += size.y + 4 * scale_;
+        } else {
+            float bw = std::min(w, 400 * scale_), bh = 52 * scale_;
+            ImVec2 b0(x, y + 4 * scale_), b1(x + bw, y + 4 * scale_ + bh);
+            dl->AddRectFilled(b0, b1, U32(c.code), 6 * scale_);
+            dl->AddRect(b0, b1, U32(c.border), 6 * scale_);
+            ImGui::SetCursorScreenPos(b0);
+            ImGui::PushID(int(a.id & 0x7FFFFFFF));
+            bool clicked = ImGui::InvisibleButton("file", ImVec2(bw, bh));
+            bool hov = ImGui::IsItemHovered();
+            ImGui::PopID();
+            ImGui::PushFont(fonts_.regular, 26);
+            dl->AddText(ImVec2(b0.x + 12 * scale_, b0.y + (bh - ImGui::GetFontSize()) / 2), U32(c.muted), icon::Attach);
+            ImGui::PopFont();
+            dl->AddText(ImVec2(b0.x + 48 * scale_, b0.y + 7 * scale_), U32(m.pending ? c.muted : c.link), a.filename.c_str());
+            ImGui::PushFont(fonts_.regular, 12);
+            dl->AddText(ImVec2(b0.x + 48 * scale_, b0.y + 29 * scale_), U32(c.muted), fileSize(a.size).c_str());
+            ImGui::PopFont();
+            if (hov && !a.url.empty()) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                ImGui::SetTooltip("Open in your browser");
+            }
+            if (clicked && !a.url.empty()) OpenURL(a.url);
+            y += 60 * scale_;
+        }
+    }
+}
+
+void App::media(const std::string& key, const std::string& still, const std::string& play, const std::string& link,
+                ImVec2 at, ImVec2 size, bool spoiler, bool gif) {
+    const Palette& c = Colours();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 end(at.x + size.x, at.y + size.y);
+    bool playing = !play.empty() && video_->Url() == play;
+    ImGui::SetCursorScreenPos(at);
+    ImGui::PushID(key.c_str());
+    bool clicked = ImGui::InvisibleButton("media", size);
+    bool hov = ImGui::IsItemHovered();
+    ImGui::PopID();
+    bool hidden = spoiler && !revealedMedia_.count(key);
+    float r = 6 * scale_;
+    ID3D11ShaderResourceView* frame = playing ? video_->Frame() : nullptr;
+    if (frame) {
+        dl->AddImageRounded(ImTextureRef(ImTextureID((intptr_t)frame)), at, end, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, r);
+    } else if (ImTextureID t = still.empty() ? ImTextureID(0) : texture(still)) {
+        dl->AddImageRounded(ImTextureRef(t), at, end, ImVec2(0, 0), ImVec2(1, 1), hidden ? IM_COL32(40, 40, 40, 255) : IM_COL32_WHITE, r);
+    } else {
+        dl->AddRectFilled(at, end, U32(c.code), r);
+    }
+    if (hidden) {
+        dl->AddRectFilled(at, end, U32(c.spoiler, 0.85f), r);
+        ImGui::PushFont(fonts_.bold, 13);
+        ImVec2 sz = ImGui::CalcTextSize("SPOILER");
+        ImVec2 p(at.x + (size.x - sz.x) / 2, at.y + (size.y - sz.y) / 2);
+        dl->AddRectFilled(ImVec2(p.x - 10 * scale_, p.y - 5 * scale_), ImVec2(p.x + sz.x + 10 * scale_, p.y + sz.y + 5 * scale_), IM_COL32(0, 0, 0, 180), 12 * scale_);
+        dl->AddText(p, IM_COL32_WHITE, "SPOILER");
+        ImGui::PopFont();
+        if (hov) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        if (clicked) revealedMedia_.insert(key);
+        return;
+    }
+    if (playing) {
+        std::string err = video_->Error();
+        if (!err.empty()) {
+            dl->AddText(ImVec2(at.x + 10 * scale_, at.y + 10 * scale_), U32(c.bad), err.c_str());
+            if (clicked) OpenURL(link);
+            return;
+        }
+        // Controls along the bottom while hovered or paused.
+        float bar = 32 * scale_;
+        bool showBar = (hov || video_->Paused() || video_->Ended()) && !video_->Looping();
+        ImVec2 mouse = ImGui::GetMousePos();
+        bool onBar = hov && mouse.y > end.y - bar;
+        if (showBar) {
+            dl->AddRectFilledMultiColor(ImVec2(at.x, end.y - bar * 1.5f), end, IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 0),
+                                        IM_COL32(0, 0, 0, 200), IM_COL32(0, 0, 0, 200));
+            float bx = at.x + 8 * scale_, by = end.y - bar + 4 * scale_;
+            ImGui::PushFont(fonts_.regular, 15);
+            const char* g = video_->Paused() || video_->Ended() ? icon::Play : icon::Pause;
+            dl->AddText(ImVec2(bx, by + 2 * scale_), IM_COL32_WHITE, g);
+            ImGui::PopFont();
+            double pos = video_->Position(), dur = video_->Duration();
+            std::string t = clock(pos) + " / " + clock(dur);
+            ImGui::PushFont(fonts_.regular, 12);
+            float tw = ImGui::CalcTextSize(t.c_str()).x;
+            float trackX = bx + 28 * scale_, trackEnd = end.x - tw - 48 * scale_;
+            dl->AddText(ImVec2(trackEnd + 8 * scale_, by + 4 * scale_), IM_COL32_WHITE, t.c_str());
+            ImGui::PopFont();
+            ImGui::PushFont(fonts_.regular, 14);
+            dl->AddText(ImVec2(end.x - 28 * scale_, by + 3 * scale_), IM_COL32_WHITE, icon::Open);
+            ImGui::PopFont();
+            float ty = by + 11 * scale_;
+            dl->AddRectFilled(ImVec2(trackX, ty - 2 * scale_), ImVec2(trackEnd, ty + 2 * scale_), IM_COL32(255, 255, 255, 80), 2 * scale_);
+            if (dur > 0)
+                dl->AddRectFilled(ImVec2(trackX, ty - 2 * scale_), ImVec2(trackX + float((trackEnd - trackX) * pos / dur), ty + 2 * scale_),
+                                  U32(c.accent), 2 * scale_);
+            if (clicked && onBar) {
+                if (mouse.x < trackX)
+                    video_->TogglePause();
+                else if (mouse.x >= trackX && mouse.x <= trackEnd && dur > 0)
+                    video_->Seek(dur * (mouse.x - trackX) / (trackEnd - trackX));
+                else if (mouse.x > end.x - 32 * scale_) {
+                    video_->Stop();
+                    OpenURL(link);
+                }
+                return;
+            }
+            // Volume with the wheel while over the video.
+        }
+        if (hov && ImGui::GetIO().MouseWheel != 0 && !video_->Looping()) {
+            config_.volume = std::clamp(config_.volume + ImGui::GetIO().MouseWheel * 0.05f, 0.0f, 1.0f);
+            video_->SetVolume(config_.volume);
+            ImGui::SetTooltip("Volume %d%%", int(config_.volume * 100 + 0.5f));
+        }
+        if (clicked) video_->TogglePause();
+        return;
+    }
+    if (!play.empty() || !link.empty()) {
+        if (!play.empty() || gif) {
+            float pr = 24 * scale_;
+            ImVec2 mid((at.x + end.x) / 2, (at.y + end.y) / 2);
+            dl->AddCircleFilled(mid, pr, IM_COL32(0, 0, 0, hov ? 220 : 160));
+            ImGui::PushFont(fonts_.regular, 20);
+            ImVec2 sz = ImGui::CalcTextSize(icon::Play);
+            dl->AddText(ImVec2(mid.x - sz.x / 2 + 2 * scale_, mid.y - sz.y / 2), IM_COL32_WHITE, icon::Play);
+            ImGui::PopFont();
+        }
+        if (hov) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        if (clicked) {
+            if (!play.empty())
+                video_->Play(play, config_.volume, gif);
+            else
+                OpenURL(link);
+        }
+    }
+}
+
+float App::embedHeight(const Embed& e, float w) {
+    if (e.type == "image" || e.type == "gifv") {
+        const Media& m = e.type == "gifv" || e.thumbnail.width == 0 ? (e.thumbnail.width ? e.thumbnail : e.image) : e.thumbnail;
+        return fit(float(m.width), float(m.height), std::min(w, 400 * scale_), 300 * scale_).y;
+    }
+    float bw = std::min(w, 432 * scale_), pad = 12 * scale_;
+    bool thumb = !e.thumbnail.proxyUrl.empty() && e.image.proxyUrl.empty() && e.video.url.empty();
+    float inner = bw - pad * 2 - 4 * scale_ - (thumb ? 88 * scale_ : 0);
+    float h = pad;
+    if (!e.provider.empty()) h += 18 * scale_;
+    if (!e.author.empty()) h += 22 * scale_;
+    if (!e.title.empty()) h += textLayout("t" + e.url + e.title, "**" + e.title + "**", inner, 0, 15, false).height + 4 * scale_;
+    if (!e.description.empty()) h += textLayout("d" + e.url + std::to_string(std::hash<std::string>()(e.description)), e.description, inner, 0, 14, false).height + 4 * scale_;
+    for (const auto& f : e.fields)
+        h += 20 * scale_ + textLayout("f" + f.name + f.value, f.value, inner, 0, 14, false).height + 4 * scale_;
+    const Media& big = !e.video.url.empty() ? (e.thumbnail.width ? e.thumbnail : e.video) : e.image;
+    if (!e.image.proxyUrl.empty() || !e.video.url.empty())
+        h += fit(float(big.width), float(big.height), bw - pad * 2 - 4 * scale_, 300 * scale_).y + 8 * scale_;
+    if (thumb) h = std::max(h, pad + 80 * scale_);
+    if (!e.footer.empty()) h += 20 * scale_;
+    return h + pad;
+}
+
+void App::embed(const Message& m, const Embed& e, float x, float y, float w) {
+    const Palette& c = Colours();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    std::string key = IdString(m.id) + e.url + e.type;
+    if (e.type == "image" || e.type == "gifv") {
+        const Media& md = e.thumbnail.width ? e.thumbnail : e.image;
+        ImVec2 size = fit(float(md.width), float(md.height), std::min(w, 400 * scale_), 300 * scale_);
+        std::string still = md.proxyUrl.empty() ? md.url : md.proxyUrl;
+        std::string play = e.type == "gifv" ? (e.video.proxyUrl.empty() ? e.video.url : e.video.proxyUrl) : "";
+        media(key, still, play, e.url, ImVec2(x, y), size, false, e.type == "gifv");
+        return;
+    }
+    float bw = std::min(w, 432 * scale_), pad = 12 * scale_, h = embedHeight(e, w);
+    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + bw, y + h), U32(c.code), 4 * scale_);
+    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + 4 * scale_, y + h), e.hasColour ? U32(Hex(e.colour)) : U32(c.border), 4 * scale_,
+                      ImDrawFlags_RoundCornersLeft);
+    bool thumb = !e.thumbnail.proxyUrl.empty() && e.image.proxyUrl.empty() && e.video.url.empty();
+    float inner = bw - pad * 2 - 4 * scale_ - (thumb ? 88 * scale_ : 0);
+    float ix = x + 4 * scale_ + pad, iy = y + pad;
+    if (!e.provider.empty()) {
+        ImGui::PushFont(fonts_.regular, 12);
+        dl->AddText(ImVec2(ix, iy), U32(c.muted), e.provider.c_str());
+        ImGui::PopFont();
+        iy += 18 * scale_;
+    }
+    if (!e.author.empty()) {
+        ImGui::PushFont(fonts_.semibold, 14);
+        dl->AddText(ImVec2(ix, iy), U32(c.heading), e.author.c_str());
+        ImGui::PopFont();
+        iy += 22 * scale_;
+    }
+    auto text = [&](const Layout& l) {
+        Hit hit = Draw(l, ImVec2(ix, iy), [this](const std::string& url) { return texture(url); }, {});
+        if (hit.piece && !hit.piece->link.empty()) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) OpenURL(hit.piece->link);
+        }
+        iy += l.height + 4 * scale_;
+    };
+    if (!e.title.empty()) {
+        // A title with a URL is a link.
+        std::string t = e.url.empty() ? "**" + e.title + "**" : "**[" + e.title + "](" + e.url + ")**";
+        text(textLayout("t" + e.url + e.title, t, inner, 0, 15, false));
+    }
+    if (!e.description.empty())
+        text(textLayout("d" + e.url + std::to_string(std::hash<std::string>()(e.description)), e.description, inner, m.guildId, 14, false));
+    for (const auto& f : e.fields) {
+        ImGui::PushFont(fonts_.semibold, 13);
+        dl->AddText(ImVec2(ix, iy), U32(c.heading), f.name.c_str());
+        ImGui::PopFont();
+        iy += 20 * scale_;
+        text(textLayout("f" + f.name + f.value, f.value, inner, m.guildId, 14, false));
+    }
+    if (!e.image.proxyUrl.empty() || !e.video.url.empty()) {
+        const Media& big = !e.video.url.empty() ? (e.thumbnail.width ? e.thumbnail : e.video) : e.image;
+        ImVec2 size = fit(float(big.width), float(big.height), bw - pad * 2 - 4 * scale_, 300 * scale_);
+        std::string still = !e.video.url.empty() ? e.thumbnail.proxyUrl : e.image.proxyUrl;
+        // Only a direct video file plays here; the rest (YouTube and so on)
+        // open in the browser.
+        std::string play = e.video.proxyUrl;
+        media(key + "m", still, play, e.url.empty() ? e.video.url : e.url, ImVec2(ix, iy + 4 * scale_), size, false, false);
+        iy += size.y + 8 * scale_;
+    }
+    if (thumb) {
+        float ts = 80 * scale_;
+        ImVec2 ta(x + bw - pad - ts, y + pad);
+        if (ImTextureID t = texture(e.thumbnail.proxyUrl)) {
+            ImVec2 sz = fit(float(e.thumbnail.width), float(e.thumbnail.height), ts, ts);
+            dl->AddImageRounded(ImTextureRef(t), ta, ImVec2(ta.x + sz.x, ta.y + sz.y), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 4 * scale_);
+        }
+    }
+    if (!e.footer.empty()) {
+        ImGui::PushFont(fonts_.regular, 12);
+        dl->AddText(ImVec2(ix, y + h - pad - 16 * scale_), U32(c.muted), e.footer.c_str());
+        ImGui::PopFont();
+    }
+}
+
+// --- reactions ---
+
+float App::reactionsHeight(const Message& m, float w) {
+    if (m.reactions.empty()) return 0;
+    float x = 0, rows = 1, gap = 4 * scale_;
+    ImGui::PushFont(fonts_.semibold, 14);
+    for (const auto& r : m.reactions) {
+        float pw = 30 * scale_ + ImGui::CalcTextSize(std::to_string(r.count).c_str()).x;
+        if (x + pw > w && x > 0) {
+            rows++;
+            x = 0;
+        }
+        x += pw + gap;
+    }
+    ImGui::PopFont();
+    return rows * (26 * scale_ + gap) + 2 * scale_;
+}
+
+void App::reactions(const Message& m, float x, float y, float w) {
+    if (m.reactions.empty()) return;
+    const Palette& c = Colours();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    float cx = 0, cy = y + 4 * scale_, gap = 4 * scale_, ph = 26 * scale_, img = 16 * scale_;
+    bool canReact = !guild_ || (perms(m.channelId) & perm::AddReactions);
+    ImGui::PushFont(fonts_.semibold, 14);
+    int i = 0;
+    for (const auto& r : m.reactions) {
+        std::string n = std::to_string(r.count);
+        float pw = 30 * scale_ + ImGui::CalcTextSize(n.c_str()).x;
+        if (cx + pw > w && cx > 0) {
+            cy += ph + gap;
+            cx = 0;
+        }
+        ImVec2 a(x + cx, cy), b(a.x + pw, a.y + ph);
+        ImGui::SetCursorScreenPos(a);
+        ImGui::PushID(int(m.id & 0x7FFFFFFF));
+        ImGui::PushID(i++);
+        bool clicked = ImGui::InvisibleButton("r", ImVec2(pw, ph));
+        bool hov = ImGui::IsItemHovered();
+        ImGui::PopID();
+        ImGui::PopID();
+        dl->AddRectFilled(a, b, r.me ? U32(c.accent, 0.25f) : U32(c.code), 8 * scale_);
+        dl->AddRect(a, b, r.me ? U32(c.accent) : (hov ? U32(c.muted) : U32(c.code)), 8 * scale_);
+        std::string url = r.emoji.id ? "https://cdn.discordapp.com/emojis/" + IdString(r.emoji.id) + ".png?size=48"
+                                     : "https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/72x72/" + TwemojiName(r.emoji.name) + ".png";
+        ImVec2 ia(a.x + 6 * scale_, a.y + (ph - img) / 2);
+        if (ImTextureID t = texture(url))
+            dl->AddImage(ImTextureRef(t), ia, ImVec2(ia.x + img, ia.y + img));
+        dl->AddText(ImVec2(ia.x + img + 5 * scale_, a.y + (ph - ImGui::GetFontSize()) / 2), r.me ? U32(c.heading) : U32(c.muted), n.c_str());
+        if (hov) ImGui::SetTooltip(":%s:", r.emoji.id ? r.emoji.name.c_str() : r.emoji.name.c_str());
+        if (clicked && canReact && !m.pending) react(m.channelId, m.id, r.emoji, !r.me);
+        cx += pw + gap;
+    }
+    ImGui::PopFont();
+}
+
+// --- composer ---
+
+int App::composerCallback(ImGuiInputTextCallbackData* d) {
+    App* app = static_cast<App*>(d->UserData);
+    if (!app->pendingInsert_.empty() && app->pendingStart_ >= 0 && app->pendingEnd_ <= d->BufTextLen) {
+        d->DeleteChars(app->pendingStart_, app->pendingEnd_ - app->pendingStart_);
+        d->InsertChars(app->pendingStart_, app->pendingInsert_.c_str());
+        d->CursorPos = app->pendingStart_ + int(app->pendingInsert_.size());
+        d->SelectionStart = d->SelectionEnd = d->CursorPos;
+        app->pendingInsert_.clear();
+        app->pendingStart_ = -1;
+    }
+    int cur = d->CursorPos, s = cur;
+    while (s > 0 && !isspace((unsigned char)d->Buf[s - 1])) s--;
+    app->tokenStart_ = s;
+    app->tokenEnd_ = cur;
+    app->tokenText_.assign(d->Buf + s, size_t(cur - s));
+    return 0;
+}
+
+void App::suggest() {
+    suggestions_.clear();
+    if (tokenText_.size() < 2 && !(tokenText_ == "@")) return;
+    if (tokenStart_ == dismissedToken_) return;
+    char kind = tokenText_[0];
+    std::string q = tokenText_.substr(1);
+    std::transform(q.begin(), q.end(), q.begin(), ::tolower);
+    auto lower = [](std::string s) {
+        std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+        return s;
+    };
+    const size_t kMax = 8;
+    if (kind == '@') {
+        std::vector<uint64_t> people;
+        if (guild_) {
+            for (const auto& [uid, mem] : store_.guilds[guild_].members) people.push_back(uid);
+        } else if (store_.channels.count(channel_)) {
+            people = store_.channels[channel_].recipients;
+        }
+        // Recent authors first.
+        std::vector<uint64_t> recent;
+        const auto& list = store_.messages[channel_].list;
+        for (auto it = list.rbegin(); it != list.rend() && recent.size() < 50; ++it)
+            if (std::find(recent.begin(), recent.end(), it->authorId) == recent.end()) recent.push_back(it->authorId);
+        std::stable_sort(people.begin(), people.end(), [&](uint64_t a, uint64_t b) {
+            auto ia = std::find(recent.begin(), recent.end(), a), ib = std::find(recent.begin(), recent.end(), b);
+            return ia < ib;
+        });
+        for (uint64_t uid : people) {
+            if (suggestions_.size() >= kMax) break;
+            if (uid == store_.me) continue;
+            std::string name = store_.DisplayName(guild_, uid);
+            const User* u = store_.FindUser(uid);
+            std::string user = u ? u->username : "";
+            if (!q.empty() && lower(name).find(q) == std::string::npos && lower(user).find(q) == std::string::npos) continue;
+            suggestions_.push_back({name + (user.empty() || user == name ? "" : "  " + user), "@" + name, "<@" + IdString(uid) + ">",
+                                    avatarUrl(uid, guild_), userColour(guild_, uid)});
+        }
+        if (guild_ && (perms(channel_) & perm::MentionEveryone))
+            for (const char* e : {"everyone", "here"})
+                if (suggestions_.size() < kMax && std::string(e).rfind(q, 0) == 0)
+                    suggestions_.push_back({std::string("@") + e, std::string("@") + e, std::string("@") + e, "", 0});
+    } else if (kind == ':' && q.size() >= 2) {
+        if (guild_)
+            for (const auto& e : store_.guilds[guild_].emojis)
+                if (suggestions_.size() < kMax && lower(e.name).find(q) != std::string::npos)
+                    suggestions_.push_back({":" + e.name + ":", ":" + e.name + ":", "",
+                                            "https://cdn.discordapp.com/emojis/" + IdString(e.id) + ".png?size=48", 0});
+        for (int pass = 0; pass < 2 && suggestions_.size() < kMax; pass++)
+            for (const auto& e : EmojiTable()) {
+                if (suggestions_.size() >= kMax) break;
+                std::string names = std::string(" ") + e.names;
+                bool prefix = names.find(" " + q) != std::string::npos;
+                if (pass == 0 ? !prefix : (prefix || names.find(q) == std::string::npos)) continue;
+                suggestions_.push_back({":" + FirstName(e) + ":", e.emoji, "",
+                                        "https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/72x72/" + TwemojiName(e.emoji) + ".png", 0});
+            }
+    } else if (kind == '#' && guild_) {
+        for (uint64_t id : store_.GuildChannels(guild_)) {
+            const Channel& ch = store_.channels[id];
+            if (ch.type == chan::Category || suggestions_.size() >= kMax) continue;
+            if (!q.empty() && lower(ch.name).find(q) == std::string::npos) continue;
+            suggestions_.push_back({"#" + ch.name, "#" + ch.name, "<#" + IdString(id) + ">", "", 0});
+        }
+    }
+    if (suggestion_ >= int(suggestions_.size())) suggestion_ = 0;
+}
+
+void App::pick(const Suggestion& s) {
+    pendingInsert_ = s.insert + " ";
+    pendingStart_ = tokenStart_;
+    pendingEnd_ = tokenEnd_;
+    if (!s.code.empty() && s.code != s.insert) mentionCodes_[s.insert] = s.code;
+    suggestions_.clear();
+}
+
+void App::autocomplete(ImVec2 above, float w) {
+    if (suggestions_.empty()) return;
+    const Palette& c = Colours();
+    float row = 34 * scale_, pad = 6 * scale_;
+    float h = suggestions_.size() * row + pad * 2;
+    ImVec2 a(above.x, above.y - h - 6 * scale_);
+    ImGui::SetNextWindowPos(a);
+    ImGui::SetNextWindowSize(ImVec2(w, h));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad, pad));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, c.sidebar);
+    ImGui::Begin("##suggest", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav |
+                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_Tooltip);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    for (int i = 0; i < int(suggestions_.size()); i++) {
+        const Suggestion& s = suggestions_[i];
+        ImVec2 ra = ImGui::GetCursorScreenPos(), rb(ra.x + w - pad * 2, ra.y + row);
+        ImGui::PushID(i);
+        bool clicked = ImGui::InvisibleButton("s", ImVec2(w - pad * 2, row));
+        if (ImGui::IsItemHovered()) suggestion_ = i;
+        ImGui::PopID();
+        if (i == suggestion_) dl->AddRectFilled(ra, rb, U32(c.selected), 4 * scale_);
+        float tx = ra.x + 8 * scale_, img = 22 * scale_;
+        if (!s.image.empty()) {
+            if (ImTextureID t = texture(s.image)) {
+                ImVec2 ia(tx, ra.y + (row - img) / 2);
+                bool round = s.colour != 0;
+                dl->AddImageRounded(ImTextureRef(t), ia, ImVec2(ia.x + img, ia.y + img), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE,
+                                    round ? img / 2 : 0);
+            }
+            tx += img + 10 * scale_;
+        }
+        dl->AddText(ImVec2(tx, ra.y + (row - ImGui::GetFontSize()) / 2), s.colour ? s.colour : U32(c.text), s.label.c_str());
+        if (clicked) pick(s);
+    }
+    ImGui::End();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
+}
+
+void App::composer(float x, float y, float w, float* height) {
+    const Palette& c = Colours();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 o = ImGui::GetWindowPos();
+    float side = 16 * scale_, used = 0;
+    float boxX = o.x + side, boxW = w - side * 2;
+    float top = o.y + y;
+
+    if (!canSend(channel_)) {
+        float bh = 44 * scale_;
+        ImVec2 a(boxX, top + 4 * scale_);
+        dl->AddRectFilled(a, ImVec2(a.x + boxW, a.y + bh), U32(c.input), 8 * scale_);
+        dl->AddText(ImVec2(a.x + 16 * scale_, a.y + (bh - ImGui::GetFontSize()) / 2), U32(c.muted),
+                    "You can't send messages in this channel.");
+        *height = bh + 28 * scale_;
+        return;
+    }
+
+    // Bars above the box: replying, editing, attachments, errors.
+    float barH = 30 * scale_;
+    auto bar = [&](const std::string& text, bool* cancel) {
+        ImVec2 a(boxX, top + used);
+        dl->AddRectFilled(a, ImVec2(a.x + boxW, a.y + barH), U32(c.sidebar), 8 * scale_, ImDrawFlags_RoundCornersTop);
+        ImGui::PushFont(fonts_.regular, 13);
+        dl->AddText(ImVec2(a.x + 14 * scale_, a.y + (barH - ImGui::GetFontSize()) / 2), U32(c.muted), text.c_str());
+        ImGui::PopFont();
+        ImGui::SetCursorScreenPos(ImVec2(a.x + boxW - 28 * scale_, a.y + 3 * scale_));
+        *cancel = iconButton(text.c_str(), icon::Dismiss, ImVec2(24 * scale_, 24 * scale_), 11, fonts_.regular);
+        used += barH;
+    };
+    if (replyTo_) {
+        std::string name;
+        for (const auto& m : store_.messages[channel_].list)
+            if (m.id == replyTo_) name = store_.DisplayName(guild_, m.authorId);
+        bool cancel = false;
+        bar("Replying to " + name, &cancel);
+        if (cancel) replyTo_ = 0;
+    }
+    if (editing_) {
+        bool cancel = false;
+        bar("Editing a message: Enter saves, Escape cancels", &cancel);
+        if (cancel) {
+            editing_ = 0;
+            std::fill(draft_.begin(), draft_.end(), 0);
+            if (auto it = drafts_.find(channel_); it != drafts_.end()) strncpy(draft_.data(), it->second.c_str(), draft_.size() - 1);
+        }
+    }
+    if (!files_.empty()) {
+        float fh = 34 * scale_;
+        float fx = boxX;
+        ImGui::PushFont(fonts_.regular, 13);
+        for (size_t i = 0; i < files_.size(); i++) {
+            std::string label = files_[i].name + "  " + fileSize(files_[i].bytes.size());
+            float fw = ImGui::CalcTextSize(label.c_str()).x + 44 * scale_;
+            if (fx + fw > boxX + boxW && fx > boxX) {
+                fx = boxX;
+                used += fh + 4 * scale_;
+            }
+            ImVec2 a(fx, top + used);
+            dl->AddRectFilled(a, ImVec2(a.x + fw, a.y + fh), U32(c.sidebar), 6 * scale_);
+            dl->AddText(ImVec2(a.x + 10 * scale_, a.y + (fh - ImGui::GetFontSize()) / 2), U32(c.text), label.c_str());
+            ImGui::SetCursorScreenPos(ImVec2(a.x + fw - 28 * scale_, a.y + 5 * scale_));
+            ImGui::PushID(int(i));
+            if (iconButton("x", icon::Dismiss, ImVec2(24 * scale_, 24 * scale_), 11, fonts_.regular, "Remove")) {
+                files_.erase(files_.begin() + i);
+                ImGui::PopID();
+                break;
+            }
+            ImGui::PopID();
+            fx += fw + 6 * scale_;
+        }
+        ImGui::PopFont();
+        used += fh + 6 * scale_;
+    }
+    if (!composeError_.empty()) {
+        ImGui::PushFont(fonts_.regular, 13);
+        dl->AddText(ImVec2(boxX + 4 * scale_, top + used + 2 * scale_), U32(c.bad), composeError_.c_str());
+        ImGui::PopFont();
+        used += 22 * scale_;
+    }
+
+    // The box: attach button, text, emoji button.
+    float btn = 44 * scale_;
+    float textW = boxW - btn * 2;
+    float textH = ImGui::CalcTextSize(draft_.data(), nullptr, false, textW - 20 * scale_).y;
+    float lineH = ImGui::GetFontSize();
+    float boxH = std::clamp(textH + 22 * scale_, 44 * scale_, std::max(44 * scale_, ImGui::GetMainViewport()->Size.y * 0.4f));
+    if (draft_[0] == 0) boxH = 44 * scale_;
+    ImVec2 a(boxX, top + used);
+    dl->AddRectFilled(a, ImVec2(a.x + boxW, a.y + boxH), U32(c.input), 8 * scale_,
+                      (replyTo_ || editing_) && files_.empty() && composeError_.empty() ? ImDrawFlags_RoundCornersBottom : 0);
+    ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + (44 * scale_ - btn) / 2));
+    if (iconButton("attach", icon::Attach, ImVec2(btn, btn), 18, fonts_.regular, "Attach files")) {
+        wchar_t buf[8192] = {};
+        OPENFILENAMEW ofn{sizeof(ofn)};
+        ofn.hwndOwner = hwnd_;
+        ofn.lpstrFile = buf;
+        ofn.nMaxFile = ARRAYSIZE(buf);
+        ofn.Flags = OFN_ALLOWMULTISELECT | OFN_EXPLORER | OFN_FILEMUSTEXIST;
+        if (GetOpenFileNameW(&ofn)) {
+            std::wstring dir = buf;
+            const wchar_t* p = buf + dir.size() + 1;
+            if (!*p) {
+                attachFile(dir);
+            } else {
+                for (; *p; p += wcslen(p) + 1) attachFile(dir + L"\\" + p);
+            }
+        }
+    }
+    ImGui::SetCursorScreenPos(ImVec2(a.x + boxW - btn, a.y + (44 * scale_ - btn) / 2));
+    if (iconButton("emoji", icon::Emoji, ImVec2(btn, btn), 18, fonts_.regular, "Emoji")) {
+        pickerMessage_ = 0;
+        pickerAt_ = ImVec2(a.x + boxW, a.y);
+        pickerOpen_ = true;
+    }
+
+    // Keys the text box mustn't see: picking a suggestion, pasting an
+    // image, editing the last message.
+    ImGuiID inputId = ImGui::GetID("##draft");
+    bool active = ImGui::GetActiveID() == inputId;
+    suggest();
+    if (active && !suggestions_.empty()) {
+        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) suggestion_ = (suggestion_ + 1) % int(suggestions_.size());
+        if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) suggestion_ = (suggestion_ + int(suggestions_.size()) - 1) % int(suggestions_.size());
+        bool choose = ImGui::IsKeyPressed(ImGuiKey_Tab) || ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter);
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+            dismissedToken_ = tokenStart_;
+            suggestions_.clear();
+        }
+        for (ImGuiKey k : {ImGuiKey_DownArrow, ImGuiKey_UpArrow, ImGuiKey_Tab, ImGuiKey_Enter, ImGuiKey_KeypadEnter, ImGuiKey_Escape})
+            ImGui::SetKeyOwner(k, ImGui::GetID("suggest"), ImGuiInputFlags_LockThisFrame);
+        if (choose && !suggestions_.empty()) pick(suggestions_[suggestion_]);
+    } else if (active) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+            if (editing_) {
+                editing_ = 0;
+                std::fill(draft_.begin(), draft_.end(), 0);
+                if (auto it = drafts_.find(channel_); it != drafts_.end()) strncpy(draft_.data(), it->second.c_str(), draft_.size() - 1);
+            } else {
+                replyTo_ = 0;
+            }
+            ImGui::SetKeyOwner(ImGuiKey_Escape, ImGui::GetID("esc"), ImGuiInputFlags_LockThisFrame);
+            focusComposer_ = true;
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_UpArrow) && draft_[0] == 0 && !editing_) {
+            const auto& list = store_.messages[channel_].list;
+            for (auto it = list.rbegin(); it != list.rend(); ++it)
+                if (it->authorId == store_.me && !it->pending && normalType(it->type)) {
+                    drafts_[channel_] = "";
+                    strncpy(draft_.data(), it->content.c_str(), draft_.size() - 1);
+                    editing_ = it->id;
+                    replyTo_ = 0;
+                    break;
+                }
+            ImGui::SetKeyOwner(ImGuiKey_UpArrow, ImGui::GetID("up"), ImGuiInputFlags_LockThisFrame);
+            focusComposer_ = true;
+        }
+        if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_V) &&
+            (IsClipboardFormatAvailable(CF_HDROP) || !IsClipboardFormatAvailable(CF_UNICODETEXT)) && pasteImage())
+            ImGui::SetKeyOwner(ImGuiKey_V, ImGui::GetID("paste"), ImGuiInputFlags_LockThisFrame);
+    }
+    if (!suggestions_.empty() && active) autocomplete(ImVec2(a.x, a.y), boxW);
+
+    // Type anywhere to write.
+    if (!active && !ImGui::IsAnyItemActive() && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId) &&
+        GetForegroundWindow() == hwnd_ && !ImGui::GetIO().KeyCtrl && !ImGui::GetIO().InputQueueCharacters.empty())
+        focusComposer_ = true;
+
+    ImGui::SetCursorScreenPos(ImVec2(a.x + btn, a.y + (44 * scale_ - lineH) / 2 - ImGui::GetStyle().FramePadding.y));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4 * scale_, ImGui::GetStyle().FramePadding.y));
+    if (focusComposer_) {
+        ImGui::SetKeyboardFocusHere();
+        focusComposer_ = false;
+    }
+    bool sendIt = ImGui::InputTextMultiline("##draft", draft_.data(), draft_.size(), ImVec2(textW, boxH - (44 * scale_ - lineH) / 2),
+                                            ImGuiInputTextFlags_CtrlEnterForNewLine | ImGuiInputTextFlags_EnterReturnsTrue |
+                                                ImGuiInputTextFlags_WordWrap | ImGuiInputTextFlags_CallbackAlways |
+                                                ImGuiInputTextFlags_NoHorizontalScroll,
+                                            &App::composerCallback, this);
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+    composerActive_ = ImGui::IsItemActive();
+    if (draft_[0] == 0 && !composerActive_) {
+        std::string hint = editing_ ? "Edit message" : "Message " + channelTitle(channel_);
+        dl->AddText(ImVec2(a.x + btn + 4 * scale_, a.y + (44 * scale_ - lineH) / 2), U32(c.muted), hint.c_str());
+    } else if (draft_[0] == 0) {
+        std::string hint = "Message " + channelTitle(channel_);
+        dl->AddText(ImVec2(a.x + btn + 4 * scale_, a.y + (44 * scale_ - lineH) / 2), U32(c.muted, 0.6f), hint.c_str());
+    }
+    if (sendIt) {
+        send();
+        focusComposer_ = true;  // Enter leaves the box; come straight back
+    }
+    used += boxH;
+    *height = used + 24 * scale_;
+}
+
+}  // namespace disky
