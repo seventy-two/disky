@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <d3d11.h>
 
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -28,10 +29,8 @@ namespace disky {
 
 class App {
 public:
-    // wake is called from background threads when there's something new;
-    // notify shows a Windows notification.
-    App(HWND hwnd, ID3D11Device* device, std::function<void()> wake,
-        std::function<void(const std::string& title, const std::string& body)> notify);
+    // wake is called from background threads when there's something new.
+    App(HWND hwnd, ID3D11Device* device, std::function<void()> wake);
     ~App();
 
     void SetScale(float scale);
@@ -47,8 +46,6 @@ public:
     // Busy says frames are wanted continuously (a video's playing).
     bool Busy() const;
     bool InCaption(float x, float y) const;
-    // NotificationClicked opens the channel the last notification was for.
-    void NotificationClicked();
     // DropFiles attaches files dropped on the window.
     void DropFiles(const std::vector<std::wstring>& paths);
     // SaveWindow remembers where the window is, for next time.
@@ -77,7 +74,10 @@ private:
     void react(uint64_t channel, uint64_t id, const Emoji& e, bool add);
     void attachFile(const std::wstring& path);
     bool pasteImage();
+    // notifyMention adds a mention or DM to the notification panel.
     void notifyMention(const Message& m);
+    // seeNotices marks a channel's notifications seen (0 for all).
+    void seeNotices(uint64_t channel);
 
     // Drawing.
     void titleBar();
@@ -107,6 +107,10 @@ private:
     void autocomplete(ImVec2 above, float w);
     void memberList(float x, float y, float w, float h);
     void emojiPicker();
+    // bell is the title bar's notification button, glowing while there are
+    // unseen ones; notices is the panel it opens.
+    void bell(ImVec2 at, float w, float h);
+    void notices();
     void settings();
     // fold draws a column folded away: a thin strip that opens it again.
     // It returns true when clicked.
@@ -140,7 +144,6 @@ private:
     HWND hwnd_;
     ID3D11Device* device_;
     std::function<void()> wake_;
-    std::function<void(const std::string&, const std::string&)> notify_;
     float scale_ = 1;
     bool dark_ = true;
     Fonts fonts_;
@@ -173,7 +176,16 @@ private:
     std::unordered_map<uint64_t, int> listRanges_;       // channel → ranges subscribed
     uint64_t subscribedChannel_ = 0;
     std::unordered_map<uint64_t, unsigned long long> acked_;  // channel → when last acked
-    uint64_t notifyChannel_ = 0, notifyGuild_ = 0;
+    // Notifications, newest first, kept while disky runs.
+    struct Notice {
+        uint64_t guild = 0, channel = 0, author = 0;
+        std::string title, body;
+        int64_t time = 0;  // Unix ms
+        bool seen = false;
+    };
+    std::deque<Notice> notices_;
+    bool noticesOpen_ = false;
+    ImVec2 bellAt_;  // the bell's bottom right, for placing the panel
 
     // Message list.
     struct Cached {

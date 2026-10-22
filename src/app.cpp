@@ -98,9 +98,8 @@ void OpenURL(const std::string& url) {
     ShellExecuteW(nullptr, L"open", Widen(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
-App::App(HWND hwnd, ID3D11Device* device, std::function<void()> wake,
-         std::function<void(const std::string&, const std::string&)> notify)
-    : hwnd_(hwnd), device_(device), wake_(std::move(wake)), notify_(std::move(notify)) {
+App::App(HWND hwnd, ID3D11Device* device, std::function<void()> wake)
+    : hwnd_(hwnd), device_(device), wake_(std::move(wake)) {
     config_ = LoadConfig();
     fonts_ = LoadFonts();
     images_ = std::make_unique<ImageCache>(device_, wake_);
@@ -360,14 +359,13 @@ void App::notifyMention(const Message& m) {
     std::string body = PlainText(m.content, names);
     if (body.empty() && !m.attachments.empty()) body = "sent an attachment";
     if (c == store_.channels.end() || !c->second.IsPrivate() || c->second.type == chan::GroupDM) body = author + ": " + body;
-    notifyChannel_ = m.channelId;
-    notifyGuild_ = m.guildId;
-    notify_(title, body);
+    notices_.push_front({m.guildId, m.channelId, m.authorId, title, body, m.timestamp, false});
+    if (notices_.size() > 100) notices_.pop_back();
 }
 
-void App::NotificationClicked() {
-    if (!notifyChannel_) return;
-    open(notifyGuild_, notifyChannel_);
+void App::seeNotices(uint64_t channel) {
+    for (auto& n : notices_)
+        if (!channel || n.channel == channel) n.seen = true;
 }
 
 // --- loading and subscriptions ---

@@ -1,8 +1,8 @@
 # disky
 
 A light Discord client for Windows: DMs, servers and channels, a member
-list, names in their role colours, images and videos inline, and a Windows
-notification when someone mentions you. Nothing else.
+list, names in their role colours, images and videos inline, and a bell
+that glows when someone mentions you. Nothing else.
 
 It's written in C++ with Win32, Direct3D 11 and
 [Dear ImGui](https://github.com/ocornut/imgui), using WinHTTP (REST and the
@@ -38,9 +38,12 @@ result is a single `disky.exe` with nothing to install.
 - **GIFs** play while the mouse is over them (uploads, Tenor and Giphy links,
   GIF stickers); animated emoji play while you're over their message.
   Clicking a GIF opens it in your browser.
-- **Notifications** come for mentions of you or your roles, @everyone where
-  your Discord settings allow, and DMs, unless you're already looking at
-  that channel. Discord's own mutes apply. Closing the window keeps disky
+- **Notifications** stay inside disky: the bell in the title bar glows,
+  with a count, for mentions of you or your roles, @everyone where your
+  Discord settings allow, and DMs, unless you're already looking at that
+  channel. Click it for the list (newest first; click one to go there).
+  Opening the list, or the channel, marks them seen. Discord's own mutes
+  apply. The list lasts while disky runs. Closing the window keeps disky
   in the tray; Quit is in the tray menu.
 
 ## Building

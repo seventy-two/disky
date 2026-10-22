@@ -148,26 +148,6 @@ void removeTrayIcon() {
     Shell_NotifyIconW(NIM_DELETE, &nid);
 }
 
-// truncate shortens text to fit a fixed-size buffer of n wide characters.
-std::wstring truncate(const std::string& s, size_t n) {
-    std::wstring w = disky::Widen(s);
-    if (w.size() >= n) w = w.substr(0, n - 2) + L"…";
-    return w;
-}
-
-void showNotification(const std::string& title, const std::string& body) {
-    NOTIFYICONDATAW nid{sizeof(nid)};
-    nid.hWnd = hwnd;
-    nid.uID = kTrayID;
-    nid.uFlags = NIF_INFO;
-    nid.dwInfoFlags = NIIF_USER | NIIF_LARGE_ICON;
-    nid.hBalloonIcon = (HICON)LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON,
-                                         GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0);
-    wcscpy_s(nid.szInfoTitle, truncate(title, ARRAYSIZE(nid.szInfoTitle)).c_str());
-    wcscpy_s(nid.szInfo, truncate(body.empty() ? " " : body, ARRAYSIZE(nid.szInfo)).c_str());
-    Shell_NotifyIconW(NIM_MODIFY, &nid);
-}
-
 void showWindow() {
     ShowWindow(hwnd, IsIconic(hwnd) ? SW_RESTORE : SW_SHOW);
     SetForegroundWindow(hwnd);
@@ -300,10 +280,6 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wParam, LPARAM lParam) {
         case NIN_KEYSELECT: showWindow(); break;
         case WM_RBUTTONUP:
         case WM_CONTEXTMENU: trayMenu(); break;
-        case NIN_BALLOONUSERCLICK:
-            if (app) app->NotificationClicked();
-            showWindow();
-            break;
         }
         return 0;
     case WM_ENDSESSION:
@@ -385,7 +361,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int) {
     ImGui_ImplDX11_Init(device, context);
 
     app = std::make_unique<disky::App>(
-        hwnd, device, [] { PostMessageW(hwnd, WM_APP_WAKE, 0, 0); }, showNotification);
+        hwnd, device, [] { PostMessageW(hwnd, WM_APP_WAKE, 0, 0); });
     app->SetScale(ImGui_ImplWin32_GetDpiScaleForHwnd(hwnd));
     applyTheme();
     addTrayIcon();

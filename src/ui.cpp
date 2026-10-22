@@ -55,6 +55,8 @@ bool App::InCaption(float x, float y) const {
 
 void App::Frame() {
     now_ = ImGui::GetTime();
+    // What's on screen counts as seen.
+    if (channel_ && GetForegroundWindow() == hwnd_ && !IsIconic(hwnd_) && atBottom_) seeNotices(channel_);
     images_->Tick();
     gifWanted_ = false;
     const Palette& c = Colours();
@@ -109,6 +111,7 @@ void App::Frame() {
         emojiPicker();
         settings();
     }
+    notices();
     ImGui::End();
     // A GIF stops once the mouse leaves it, even if it's gone off screen.
     if (!gifWanted_ && gif_->Active() && !gif_->Paused()) gif_->TogglePause();
@@ -137,6 +140,7 @@ void App::titleBar() {
     // Window buttons, the size Windows draws them.
     noDrag_.clear();
     float bw = 46 * scale_;
+    if (ready_) bell(ImVec2(o.x + w - bw * 4, o.y), bw, captionH_);
     const char* glyphs[] = {icon::Minimise, IsZoomed(hwnd_) ? icon::Restore : icon::Maximise, icon::Close};
     ImGui::PushFont(fonts_.regular, 10);
     for (int i = 0; i < 3; i++) {
@@ -158,6 +162,157 @@ void App::titleBar() {
         }
     }
     ImGui::PopFont();
+}
+
+// --- notifications ---
+
+void App::bell(ImVec2 a, float w, float h) {
+    const Palette& c = Colours();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 o = ImGui::GetWindowPos();
+    noDrag_.push_back(ImRect(ImVec2(a.x - o.x, 0), ImVec2(a.x - o.x + w, h)));
+    ImGui::SetCursorScreenPos(a);
+    bool pressed = ImGui::InvisibleButton("bell", ImVec2(w, h));
+    bool hov = ImGui::IsItemHovered();
+    int unseen = 0;
+    for (const auto& n : notices_) unseen += !n.seen;
+    ImVec2 mid(a.x + w / 2, a.y + h / 2);
+    if (hov || noticesOpen_) dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), U32(c.hover));
+    if (unseen) {
+        // A soft glow: rings fading out from the bell. Still, not pulsing,
+        // so an unseen one costs nothing while disky waits.
+        for (int i = 6; i >= 1; i--)
+            dl->AddCircleFilled(mid, (4 + i * 2.2f) * scale_, U32(c.accent, 0.05f), 32);
+    }
+    ImGui::PushFont(fonts_.regular, 14);
+    ImVec2 sz = ImGui::CalcTextSize(icon::Bell);
+    dl->AddText(ImVec2(mid.x - sz.x / 2, mid.y - sz.y / 2), unseen ? U32(c.accent) : U32(hov ? c.heading : c.muted), icon::Bell);
+    ImGui::PopFont();
+    if (unseen) {
+        std::string n = unseen > 9 ? "9+" : std::to_string(unseen);
+        ImGui::PushFont(fonts_.bold, 10);
+        ImVec2 ns = ImGui::CalcTextSize(n.c_str());
+        ImVec2 p(mid.x + 5 * scale_, a.y + 4 * scale_);
+        float r = std::max(ns.x / 2 + 3 * scale_, 7 * scale_);
+        dl->AddCircleFilled(ImVec2(p.x + r, p.y + r), r, U32(c.bad), 20);
+        dl->AddText(ImVec2(p.x + r - ns.x / 2, p.y + r - ns.y / 2), IM_COL32_WHITE, n.c_str());
+        ImGui::PopFont();
+    }
+    if (hov && !noticesOpen_) ImGui::SetTooltip(unseen ? "Notifications (%d new)" : "Notifications", unseen);
+    bellAt_ = ImVec2(a.x + w, a.y + h);
+    if (pressed) {
+        noticesOpen_ = !noticesOpen_;
+        if (noticesOpen_) ImGui::OpenPopup("notices");
+    }
+}
+
+void App::notices() {
+    const Palette& c = Colours();
+    float pw = 380 * scale_, ph = 460 * scale_;
+    ImVec2 vp = ImGui::GetMainViewport()->Size;
+    ImGui::SetNextWindowPos(ImVec2(std::clamp(bellAt_.x - pw, 8 * scale_, vp.x - pw - 8 * scale_), bellAt_.y + 2 * scale_));
+    ImGui::SetNextWindowSize(ImVec2(pw, 0));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(pw, 0), ImVec2(pw, ph));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
+    if (!ImGui::BeginPopup("notices")) {
+        ImGui::PopStyleVar(2);
+        // Closed by a click outside, Escape or the bell: all seen now.
+        if (noticesOpen_ && !ImGui::IsPopupOpen("notices")) {
+            noticesOpen_ = false;
+            seeNotices(0);
+        }
+        return;
+    }
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    float pad = 12 * scale_;
+    ImVec2 o = ImGui::GetCursorScreenPos();
+    float headH = 36 * scale_;
+    ImGui::PushFont(fonts_.semibold, 14);
+    dl->AddText(ImVec2(o.x + pad, o.y + (headH - ImGui::GetFontSize()) / 2), U32(c.heading), "Notifications");
+    ImGui::PopFont();
+    if (!notices_.empty()) {
+        ImGui::PushFont(fonts_.regular, 12);
+        const char* t = "Clear all";
+        ImVec2 ts = ImGui::CalcTextSize(t);
+        ImVec2 ta(o.x + pw - pad - ts.x, o.y + (headH - ts.y) / 2);
+        ImGui::SetCursorScreenPos(ImVec2(ta.x - 4 * scale_, o.y + 6 * scale_));
+        bool clear = ImGui::InvisibleButton("clear", ImVec2(ts.x + 8 * scale_, headH - 12 * scale_));
+        dl->AddText(ta, U32(ImGui::IsItemHovered() ? c.heading : c.muted), t);
+        ImGui::PopFont();
+        if (clear) notices_.clear();
+    }
+    dl->AddLine(ImVec2(o.x, o.y + headH - 1), ImVec2(o.x + pw, o.y + headH - 1), U32(c.border));
+    ImGui::SetCursorScreenPos(ImVec2(o.x, o.y + headH));
+
+    if (notices_.empty()) {
+        ImGui::Dummy(ImVec2(pw, 60 * scale_));
+        ImGui::PushFont(fonts_.regular, 13);
+        const char* t = "Nothing yet. Mentions and DMs land here.";
+        ImVec2 ts = ImGui::CalcTextSize(t);
+        dl->AddText(ImVec2(o.x + (pw - ts.x) / 2, o.y + headH + (60 * scale_ - ts.y) / 2), U32(c.muted), t);
+        ImGui::PopFont();
+    } else {
+        // The list scrolls within the panel's height.
+        float rowsH = 0;
+        std::vector<float> heights;
+        float textW = pw - pad * 2 - 36 * scale_;
+        for (const auto& n : notices_) {
+            ImGui::PushFont(fonts_.regular, 13);
+            float bh = std::min(ImGui::CalcTextSize(n.body.c_str(), nullptr, false, textW).y, ImGui::GetFontSize() * 3.9f);
+            ImGui::PopFont();
+            heights.push_back(std::max(44 * scale_, 26 * scale_ + bh + 8 * scale_));
+            rowsH += heights.back();
+        }
+        float listH = std::min(rowsH, ph - headH);
+        ImGui::BeginChild("list", ImVec2(pw, listH), 0);
+        ImDrawList* ldl = ImGui::GetWindowDrawList();
+        int i = 0;
+        for (auto it = notices_.begin(); it != notices_.end(); ++it, ++i) {
+            const Notice& n = *it;
+            ImVec2 a = ImGui::GetCursorScreenPos();
+            float rh = heights[i];
+            ImGui::PushID(i);
+            bool clicked = ImGui::InvisibleButton("n", ImVec2(pw, rh));
+            bool hov = ImGui::IsItemHovered();
+            ImGui::PopID();
+            if (hov) {
+                ldl->AddRectFilled(a, ImVec2(a.x + pw, a.y + rh), U32(c.hover));
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            }
+            if (!n.seen) ldl->AddRectFilled(a, ImVec2(a.x + 3 * scale_, a.y + rh), U32(c.accent));
+            float av = 28 * scale_;
+            ImVec2 aa(a.x + pad, a.y + 8 * scale_);
+            if (ImTextureID t = texture(avatarUrl(n.author, n.guild)))
+                ldl->AddImageRounded(ImTextureRef(t), aa, ImVec2(aa.x + av, aa.y + av), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, av / 2);
+            float tx = aa.x + av + 8 * scale_;
+            std::string when = formatTime(n.time, false);
+            ImGui::PushFont(fonts_.regular, 11);
+            ImVec2 ws = ImGui::CalcTextSize(when.c_str());
+            ldl->AddText(ImVec2(a.x + pw - pad - ws.x, a.y + 9 * scale_), U32(c.muted), when.c_str());
+            ImGui::PopFont();
+            ImGui::PushFont(fonts_.semibold, 13);
+            Label(ldl, fonts_.semibold, ImGui::GetFontSize(), ImVec2(tx, a.y + 7 * scale_), U32(n.seen ? c.text : c.heading), n.title,
+                  textW - ws.x - 8 * scale_, [this](const std::string& u) { return texture(u); });
+            ImGui::PopFont();
+            ImGui::PushFont(fonts_.regular, 13);
+            ldl->PushClipRect(ImVec2(tx, a.y), ImVec2(tx + textW, a.y + rh - 6 * scale_), true);
+            ldl->AddText(nullptr, 0, ImVec2(tx, a.y + 26 * scale_), U32(c.muted), n.body.c_str(), nullptr, textW);
+            ldl->PopClipRect();
+            ImGui::PopFont();
+            if (std::next(it) != notices_.end())
+                ldl->AddLine(ImVec2(a.x + pad, a.y + rh - 1), ImVec2(a.x + pw - pad, a.y + rh - 1), U32(c.border, 0.5f));
+            if (clicked) {
+                uint64_t g = n.guild, ch = n.channel;
+                ImGui::CloseCurrentPopup();
+                open(g, ch);
+                break;
+            }
+        }
+        ImGui::EndChild();
+    }
+    ImGui::EndPopup();
+    ImGui::PopStyleVar(2);
 }
 
 // --- login ---
@@ -722,7 +877,7 @@ void App::settings() {
         ImGui::TextUnformatted("Settings");
         ImGui::PopFont();
         if (const User* me = store_.FindUser(store_.me)) ImGui::TextDisabled("Signed in as %s", me->username.c_str());
-        if (ImGui::Checkbox("Notify me of mentions and DMs", &config_.notify)) SaveConfig(config_);
+        if (ImGui::Checkbox("Collect mentions and DMs under the bell", &config_.notify)) SaveConfig(config_);
         ImGui::TextDisabled("Discord's own mute and notification settings apply too.");
         if (ImGui::Checkbox("Start with Windows", &startChoice_)) SetStartWithWindows(startChoice_);
         if (ImGui::Checkbox("Show the member list", &config_.members)) SaveConfig(config_);
