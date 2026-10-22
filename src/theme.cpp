@@ -2,7 +2,10 @@
 
 #include <windows.h>
 
+#include <fstream>
+#include <map>
 #include <string>
+#include <vector>
 
 namespace disky {
 
@@ -36,6 +39,25 @@ std::string fontPath(const char* file) {
 }
 
 bool exists(const std::string& path) { return GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES; }
+
+// fontData reads a font file once, so fonts merged into several faces
+// (icons, symbols) share one copy in memory.
+std::vector<char>* fontData(const std::string& path) {
+    static std::map<std::string, std::vector<char>> files;
+    auto it = files.find(path);
+    if (it != files.end()) return it->second.empty() ? nullptr : &it->second;
+    std::vector<char>& data = files[path];
+    std::ifstream f(path, std::ios::binary);
+    if (f) data.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    return data.empty() ? nullptr : &data;
+}
+
+ImFont* addFont(const std::string& path, ImFontConfig cfg, const ImWchar* ranges = nullptr) {
+    std::vector<char>* data = fontData(path);
+    if (!data) return nullptr;
+    cfg.FontDataOwnedByAtlas = false;
+    return ImGui::GetIO().Fonts->AddFontFromMemoryTTF(data->data(), int(data->size()), kBody, &cfg, ranges);
+}
 
 }  // namespace
 
@@ -115,22 +137,18 @@ Fonts LoadFonts() {
     std::string symbols = fontPath("seguisym.ttf");
 
     auto add = [&](const char* file, bool icons) -> ImFont* {
-        std::string path = fontPath(file);
-        ImFontConfig cfg;
-        ImFont* f = exists(path) ? io.Fonts->AddFontFromFileTTF(path.c_str(), kBody, &cfg) : nullptr;
+        ImFont* f = addFont(fontPath(file), ImFontConfig());
         if (!f) return io.Fonts->AddFontDefault();
-        if (icons && exists(iconFont)) {
+        if (icons) {
             ImFontConfig merge;
             merge.MergeMode = true;
             merge.GlyphOffset = ImVec2(0, 1);
             static const ImWchar range[] = {0xE700, 0xF8FF, 0};
-            io.Fonts->AddFontFromFileTTF(iconFont.c_str(), kBody, &merge, range);
+            addFont(iconFont, merge, range);
         }
-        if (exists(symbols)) {
-            ImFontConfig merge;
-            merge.MergeMode = true;
-            io.Fonts->AddFontFromFileTTF(symbols.c_str(), kBody, &merge);
-        }
+        ImFontConfig merge;
+        merge.MergeMode = true;
+        addFont(symbols, merge);
         return f;
     };
     Fonts f;
