@@ -158,7 +158,6 @@ private:
     // Where we are.
     uint64_t guild_ = 0, channel_ = 0;
     std::map<uint64_t, uint64_t> lastChannel_;  // per guild
-    uint64_t newSince_ = 0;  // the channel's last read message when opened, for the "new" line
     std::unordered_map<uint64_t, std::string> listFor_;  // channel → member list ID
     std::unordered_map<uint64_t, int> listRanges_;       // channel → ranges subscribed
     uint64_t subscribedChannel_ = 0;
@@ -176,6 +175,7 @@ private:
     float firstShownY_ = 0;
     float composerH_ = 0;
     bool composerActive_ = false;
+    ImRect composerRect_;  // the text box, last frame
     uint64_t contextMessage_ = 0;
     std::unordered_map<uint64_t, std::vector<int>> revealed_;  // spoilers shown, by message
     std::set<std::string> revealedMedia_;

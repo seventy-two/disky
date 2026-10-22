@@ -203,32 +203,29 @@ void App::messages(float w, float h) {
         return;
     }
 
-    // Lay everything out: each message's height, with day lines and the
-    // "new" line between.
+    // Lay everything out: each message's height, with day lines between.
     struct Row {
         const Message* m;
         bool groupStart, alt;
         float y, h;
-        bool day, fresh;
+        bool day;
     };
     std::vector<Row> rows;
     rows.reserve(ms.list.size());
     float top = ms.reachedStart ? 96 * scale_ : 48 * scale_;
     float y = top;
-    bool freshShown = false, alt = true;
+    bool alt = true;
     const Message* prev = nullptr;
     for (const auto& m : ms.list) {
         bool day = !prev || !sameDay(prev->timestamp, m.timestamp);
-        bool fresh = !freshShown && newSince_ && m.id > newSince_ && !m.pending && m.authorId != store_.me;
-        if (fresh) freshShown = true;
-        bool gs = !prev || day || fresh || prev->authorId != m.authorId || m.timestamp - prev->timestamp > kGroupGap ||
+        bool gs = !prev || day || prev->authorId != m.authorId || m.timestamp - prev->timestamp > kGroupGap ||
                   m.reply.has_value() || !normalType(m.type) || !normalType(prev->type);
-        if (day || fresh) y += 24 * scale_;
+        if (day) y += 24 * scale_;
         // Each author's run of messages takes the other background from
         // the one before, so it's easy to see where one ends.
         if (gs) alt = !alt;
         float mh = messageHeight(m, gs, cw);
-        rows.push_back({&m, gs, alt, y, mh, day, fresh});
+        rows.push_back({&m, gs, alt, y, mh, day});
         y += mh;
         prev = &m;
     }
@@ -273,12 +270,12 @@ void App::messages(float w, float h) {
         ImGui::TextDisabled("Loading older messages…");
     }
     for (const auto& r : rows) {
-        float above = (r.day || r.fresh) ? 24 * scale_ : 0;
+        float above = r.day ? 24 * scale_ : 0;
         if (r.y + r.h < scroll - 200 * scale_ || r.y - above > scroll + view + 200 * scale_) continue;
-        if (r.day || r.fresh) {
+        if (r.day) {
             ImVec2 o = ImGui::GetWindowPos();
             float ly = o.y + r.y - above / 2 - scroll;
-            ImU32 col = r.fresh ? U32(c.dnd) : U32(c.border);
+            ImU32 col = U32(c.border);
             dl->AddLine(ImVec2(o.x + 16 * scale_, ly), ImVec2(o.x + cw - 16 * scale_, ly), col);
             ImGui::PushFont(fonts_.semibold, 12);
             if (r.day) {
@@ -287,12 +284,6 @@ void App::messages(float w, float h) {
                 ImVec2 la(o.x + (cw - sz.x) / 2, ly - sz.y / 2);
                 dl->AddRectFilled(ImVec2(la.x - 6 * scale_, la.y), ImVec2(la.x + sz.x + 6 * scale_, la.y + sz.y), U32(c.bg));
                 dl->AddText(la, U32(c.muted), label.c_str());
-            }
-            if (r.fresh) {
-                ImVec2 sz = ImGui::CalcTextSize("NEW");
-                ImVec2 la(o.x + cw - 16 * scale_ - sz.x - 8 * scale_, ly - sz.y / 2);
-                dl->AddRectFilled(ImVec2(la.x - 4 * scale_, la.y), ImVec2(la.x + sz.x + 4 * scale_, la.y + sz.y), U32(c.dnd));
-                dl->AddText(la, IM_COL32_WHITE, "NEW");
             }
             ImGui::PopFont();
         }
@@ -1180,6 +1171,13 @@ void App::composer(float x, float y, float w, float* height) {
         pickerOpen_ = true;
     }
 
+    // A click anywhere in the box, beside the text too, is for writing.
+    // (Clicks on the text box itself are its own, to place the cursor.)
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ImGui::IsWindowHovered() &&
+        ImGui::IsMouseHoveringRect(ImVec2(a.x + btn, a.y), ImVec2(a.x + boxW - btn, a.y + boxH)) &&
+        !composerRect_.Contains(ImGui::GetMousePos()))
+        focusComposer_ = true;
+
     // Keys the text box mustn't see: picking a suggestion, pasting an
     // image, editing the last message.
     ImGuiID inputId = ImGui::GetID("##draft");
@@ -1250,6 +1248,7 @@ void App::composer(float x, float y, float w, float* height) {
     ImGui::PopStyleVar();
     ImGui::PopStyleColor();
     composerActive_ = ImGui::IsItemActive();
+    composerRect_ = ImRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
     if (draft_[0] == 0 && !composerActive_) {
         std::string hint = editing_ ? "Edit message" : "Message " + channelTitle(channel_);
         dl->AddText(ImVec2(a.x + btn + 4 * scale_, a.y + (base - lineH) / 2), U32(c.muted), hint.c_str());

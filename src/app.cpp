@@ -397,7 +397,6 @@ void App::open(uint64_t guild, uint64_t channel) {
         focusComposer_ = true;
     }
     if (!channel) return;
-    newSince_ = store_.reads.count(channel) ? store_.reads[channel].lastAcked : 0;
     Messages& ms = store_.messages[channel];
     if (!ms.loaded && !ms.loading) loadLatest(channel);
     if (guild && subscribedChannel_ != channel) {
