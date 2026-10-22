@@ -1187,8 +1187,11 @@ void App::composer(float x, float y, float w, float* height) {
     float textW = boxW - btn * 2;
     float textH = ImGui::CalcTextSize(draft_.data(), nullptr, false, textW - 20 * scale_).y;
     float lineH = ImGui::GetFontSize();
-    float boxH = std::clamp(textH + (base - lineH) + 1, base, std::max(base, ImGui::GetMainViewport()->Size.y * 0.4f));
-    if (draft_[0] == 0) boxH = base;
+    // One line keeps the empty box's height, so typing doesn't nudge
+    // everything above it; only a second line grows it.
+    float boxH = base;
+    if (textH > lineH * 1.5f)
+        boxH = std::clamp(textH + (base - lineH) + 1, base, std::max(base, ImGui::GetMainViewport()->Size.y * 0.4f));
     ImVec2 a(boxX, top + used);
     dl->AddRectFilled(a, ImVec2(a.x + boxW, a.y + boxH), U32(c.input));
     ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + (base - btn) / 2));
