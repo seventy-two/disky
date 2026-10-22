@@ -71,10 +71,10 @@ void App::Frame() {
         ImGui::SetCursorPos(ImVec2((w - sz.x) / 2, top + (h - sz.y) / 2));
         ImGui::TextDisabled("%s", text);
     } else {
-        float railW = 72 * scale_, sideW = 240 * scale_;
+        float railW = 44 * scale_, sideW = 240 * scale_;
         bool members = config_.members && channel_ &&
                        (guild_ || (store_.channels.count(channel_) && store_.channels[channel_].type == chan::GroupDM));
-        float memW = members && w > 900 * scale_ ? 240 * scale_ : 0;
+        float memW = members && w > 900 * scale_ ? 200 * scale_ : 0;
         rail(0, top, h);
         sidebar(railW, top, sideW, h);
         chat(railW + sideW, top, w - railW - sideW - memW, h);
@@ -140,7 +140,7 @@ void App::login() {
     float cardW = 440 * scale_, cardH = 520 * scale_;
     ImVec2 a(o.x + (w - cardW) / 2, o.y + captionH_ + std::max(20 * scale_, (h - captionH_ - cardH) / 2));
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(a, ImVec2(a.x + cardW, a.y + cardH), U32(c.sidebar), 8 * scale_);
+    dl->AddRectFilled(a, ImVec2(a.x + cardW, a.y + cardH), U32(c.sidebar));
     float pad = 32 * scale_, x = a.x + pad, y = a.y + pad, inner = cardW - pad * 2;
 
     auto centred = [&](const std::string& text, ImFont* f, float size, ImU32 col) {
@@ -160,7 +160,7 @@ void App::login() {
     RemoteAuth::Status s = remote_ ? remote_->Get() : RemoteAuth::Status();
     float qr = 200 * scale_;
     ImVec2 qa(x + (inner - qr) / 2, y + 8 * scale_);
-    dl->AddRectFilled(qa, ImVec2(qa.x + qr, qa.y + qr), IM_COL32_WHITE, 6 * scale_);
+    dl->AddRectFilled(qa, ImVec2(qa.x + qr, qa.y + qr), IM_COL32_WHITE);
     using Stage = RemoteAuth::Status::Stage;
     if (s.stage == Stage::Waiting && !s.qr.empty()) {
         auto code = qrcodegen::QrCode::encodeText(s.qr.c_str(), qrcodegen::QrCode::Ecc::MEDIUM);
@@ -180,7 +180,7 @@ void App::login() {
         if (ImTextureID t = texture(url)) {
             float av = 96 * scale_;
             ImVec2 m(qa.x + (qr - av) / 2, qa.y + (qr - av) / 2);
-            dl->AddImageRounded(ImTextureRef(t), m, ImVec2(m.x + av, m.y + av), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, av / 2);
+            dl->AddImage(ImTextureRef(t), m, ImVec2(m.x + av, m.y + av), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE);
         }
     }
     y = qa.y + qr + 16 * scale_;
@@ -232,14 +232,14 @@ void App::login() {
 
 void App::rail(float x, float y, float h) {
     const Palette& c = Colours();
-    float w = 72 * scale_;
+    float w = 44 * scale_;
     ImGui::SetCursorPos(ImVec2(x, y));
     ImGui::PushStyleColor(ImGuiCol_ChildBg, c.rail);
     ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 0);
     ImGui::BeginChild("rail", ImVec2(w, h), 0);
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    float icon = 48 * scale_, gap = 8 * scale_;
-    float cy = 12 * scale_;
+    float icon = 28 * scale_, gap = 6 * scale_;
+    float cy = 8 * scale_;
 
     // item draws one rail entry; it returns whether it was clicked.
     auto item = [&](const char* id, bool selected, bool unread, int mentions, const std::string& tip,
@@ -248,26 +248,25 @@ void App::rail(float x, float y, float h) {
         ImVec2 a = ImGui::GetCursorScreenPos(), b(a.x + icon, a.y + icon);
         bool clicked = ImGui::InvisibleButton(id, ImVec2(icon, icon));
         bool hov = ImGui::IsItemHovered();
-        float rounding = selected || hov ? 16 * scale_ : icon / 2;
-        face(a, b, rounding);
+        face(a, b, 0);
+        if (hov && !selected) dl->AddRectFilled(a, b, IM_COL32(255, 255, 255, 24));
         // The pill on the left: tall when selected, short when hovered, a
         // dot when unread.
-        float ph = selected ? 40 * scale_ : hov ? 20 * scale_ : unread ? 8 * scale_ : 0;
+        float ph = selected ? icon : hov ? icon / 2 : unread ? 6 * scale_ : 0;
         if (ph > 0) {
             float px = ImGui::GetWindowPos().x;
             float my = (a.y + b.y) / 2;
-            dl->AddRectFilled(ImVec2(px, my - ph / 2), ImVec2(px + 4 * scale_, my + ph / 2), U32(c.heading), 4 * scale_,
-                              ImDrawFlags_RoundCornersRight);
+            dl->AddRectFilled(ImVec2(px, my - ph / 2), ImVec2(px + 3 * scale_, my + ph / 2), selected ? U32(c.accent) : U32(c.heading));
         }
         if (mentions > 0) {
             std::string n = mentions > 99 ? "99+" : std::to_string(mentions);
-            ImGui::PushFont(fonts_.bold, 12);
+            ImGui::PushFont(fonts_.bold, 9);
             ImVec2 sz = ImGui::CalcTextSize(n.c_str());
-            float bw = std::max(sz.x + 8 * scale_, 16 * scale_), bh = 16 * scale_;
-            ImVec2 ba(b.x - bw + 2 * scale_, b.y - bh + 2 * scale_);
-            dl->AddRectFilled(ImVec2(ba.x - 3 * scale_, ba.y - 3 * scale_), ImVec2(ba.x + bw + 3 * scale_, ba.y + bh + 3 * scale_),
-                              U32(c.rail), bh);
-            dl->AddRectFilled(ba, ImVec2(ba.x + bw, ba.y + bh), U32(c.dnd), bh);
+            float bw = std::max(sz.x + 4 * scale_, 11 * scale_), bh = 11 * scale_;
+            ImVec2 ba(b.x - bw + 3 * scale_, b.y - bh + 3 * scale_);
+            dl->AddRectFilled(ImVec2(ba.x - 1 * scale_, ba.y - 1 * scale_), ImVec2(ba.x + bw + 1 * scale_, ba.y + bh + 1 * scale_),
+                              U32(c.rail));
+            dl->AddRectFilled(ba, ImVec2(ba.x + bw, ba.y + bh), U32(c.dnd));
             dl->AddText(ImVec2(ba.x + (bw - sz.x) / 2, ba.y + (bh - sz.y) / 2), IM_COL32_WHITE, n.c_str());
             ImGui::PopFont();
         }
@@ -283,8 +282,8 @@ void App::rail(float x, float y, float h) {
         dmUnread |= store_.Unread(ch) && !store_.ChannelMuted(ch);
     }
     if (item("home", guild_ == 0, false, dmMentions, "Direct messages", [&](ImVec2 a, ImVec2 b, float r) {
-            dl->AddRectFilled(a, b, guild_ == 0 ? U32(c.accent) : U32(c.bg), r);
-            ImGui::PushFont(fonts_.regular, 22);
+            dl->AddRectFilled(a, b, guild_ == 0 ? U32(c.accent) : U32(c.bg));
+            ImGui::PushFont(fonts_.regular, 14);
             ImVec2 sz = ImGui::CalcTextSize(icon::Chat);
             dl->AddText(ImVec2(a.x + (icon - sz.x) / 2, a.y + (icon - sz.y) / 2), guild_ == 0 ? IM_COL32_WHITE : U32(c.text),
                         icon::Chat);
@@ -292,8 +291,8 @@ void App::rail(float x, float y, float h) {
         }))
         open(0, 0);
     (void)dmUnread;
-    dl->AddRectFilled(ImVec2(ImGui::GetWindowPos().x + w / 2 - 16 * scale_, ImGui::GetWindowPos().y + cy - gap / 2 - 1),
-                      ImVec2(ImGui::GetWindowPos().x + w / 2 + 16 * scale_, ImGui::GetWindowPos().y + cy - gap / 2 + 1),
+    dl->AddRectFilled(ImVec2(ImGui::GetWindowPos().x + w / 2 - 10 * scale_, ImGui::GetWindowPos().y + cy - gap / 2 - 1),
+                      ImVec2(ImGui::GetWindowPos().x + w / 2 + 10 * scale_, ImGui::GetWindowPos().y + cy - gap / 2 + 1),
                       U32(c.border));
     cy += gap / 2;
 
@@ -307,11 +306,11 @@ void App::rail(float x, float y, float h) {
                                                     : texture("https://cdn.discordapp.com/icons/" + IdString(gid) + "/" +
                                                               g.icon + ".png?size=96");
                      if (t) {
-                         dl->AddImageRounded(ImTextureRef(t), a, b, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, r);
+                         dl->AddImage(ImTextureRef(t), a, b, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE);
                      } else {
-                         dl->AddRectFilled(a, b, guild_ == gid ? U32(c.accent) : U32(c.bg), r);
+                         dl->AddRectFilled(a, b, guild_ == gid ? U32(c.accent) : U32(c.bg));
                          std::string ini = initials(g.name);
-                         ImGui::PushFont(fonts_.semibold, ini.size() > 3 ? 12.0f : 15.0f);
+                         ImGui::PushFont(fonts_.semibold, ini.size() > 3 ? 8.0f : 10.0f);
                          ImVec2 sz = ImGui::CalcTextSize(ini.c_str());
                          dl->AddText(ImVec2(a.x + (icon - sz.x) / 2, a.y + (icon - sz.y) / 2), U32(c.text), ini.c_str());
                          ImGui::PopFont();
@@ -385,11 +384,10 @@ void App::channelList(float w) {
         bool clicked = ImGui::InvisibleButton("ch", ImVec2(w - side * 2, row));
         bool hov = ImGui::IsItemHovered();
         ImGui::PopID();
-        if (selected || hov) dl->AddRectFilled(a, b, U32(selected ? c.selected : c.hover), 4 * scale_);
+        if (selected || hov) dl->AddRectFilled(a, b, U32(selected ? c.selected : c.hover));
         if (unread && !selected)
             dl->AddRectFilled(ImVec2(ImGui::GetWindowPos().x, a.y + row / 2 - 4 * scale_),
-                              ImVec2(ImGui::GetWindowPos().x + 4 * scale_, a.y + row / 2 + 4 * scale_), U32(c.heading),
-                              4 * scale_, ImDrawFlags_RoundCornersRight);
+                              ImVec2(ImGui::GetWindowPos().x + 4 * scale_, a.y + row / 2 + 4 * scale_), U32(c.heading));
         ImU32 col = selected || unread ? U32(c.heading) : hov ? U32(c.text) : U32(c.muted, muted ? 0.5f : 1.0f);
         ImGui::PushFont(fonts_.regular, 20);
         float hashY = a.y + (row - ImGui::GetFontSize()) / 2;
@@ -407,7 +405,7 @@ void App::channelList(float w) {
             ImVec2 sz = ImGui::CalcTextSize(n.c_str());
             float bw = std::max(sz.x + 8 * scale_, 16 * scale_), bh = 16 * scale_;
             ImVec2 ba(b.x - bw - 8 * scale_, a.y + (row - bh) / 2);
-            dl->AddRectFilled(ba, ImVec2(ba.x + bw, ba.y + bh), U32(c.dnd), bh);
+            dl->AddRectFilled(ba, ImVec2(ba.x + bw, ba.y + bh), U32(c.dnd));
             dl->AddText(ImVec2(ba.x + (bw - sz.x) / 2, ba.y + (bh - sz.y) / 2), IM_COL32_WHITE, n.c_str());
             ImGui::PopFont();
         }
@@ -421,7 +419,7 @@ void App::dmList(float w) {
     ImageFor images = [this](const std::string& u) { return texture(u); };
     const Palette& c = Colours();
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    float row = 42 * scale_, side = 8 * scale_, av = 32 * scale_;
+    float row = 34 * scale_, side = 8 * scale_, av = 24 * scale_;
     ImGui::SetCursorPosX(side + 8 * scale_);
     ImGui::PushFont(fonts_.semibold, 12);
     ImGui::TextDisabled("DIRECT MESSAGES");
@@ -438,7 +436,7 @@ void App::dmList(float w) {
         bool clicked = ImGui::InvisibleButton("dm", ImVec2(w - side * 2, row));
         bool hov = ImGui::IsItemHovered();
         ImGui::PopID();
-        if (selected || hov) dl->AddRectFilled(a, b, U32(selected ? c.selected : c.hover), 4 * scale_);
+        if (selected || hov) dl->AddRectFilled(a, b, U32(selected ? c.selected : c.hover));
         ImVec2 ap(a.x + 8 * scale_, a.y + (row - av) / 2);
         if (ch.type == chan::DM && !ch.recipients.empty()) {
             avatar(ch.recipients[0], 0, ap, av, true);
@@ -447,9 +445,9 @@ void App::dmList(float w) {
                                             : texture("https://cdn.discordapp.com/channel-icons/" + IdString(id) + "/" + ch.icon +
                                                       ".png?size=64");
             if (t)
-                dl->AddImageRounded(ImTextureRef(t), ap, ImVec2(ap.x + av, ap.y + av), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, av / 2);
+                dl->AddImage(ImTextureRef(t), ap, ImVec2(ap.x + av, ap.y + av), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE);
             else {
-                dl->AddCircleFilled(ImVec2(ap.x + av / 2, ap.y + av / 2), av / 2, U32(c.accent));
+                dl->AddRectFilled(ap, ImVec2(ap.x + av, ap.y + av), U32(c.accent));
                 ImGui::PushFont(fonts_.regular, 16);
                 ImVec2 sz = ImGui::CalcTextSize(icon::People);
                 dl->AddText(ImVec2(ap.x + (av - sz.x) / 2, ap.y + (av - sz.y) / 2), IM_COL32_WHITE, icon::People);
@@ -460,14 +458,14 @@ void App::dmList(float w) {
         ImGui::PushFont(unread || selected ? fonts_.semibold : fonts_.regular, kBody);
         float tx = ap.x + av + 12 * scale_, avail = b.x - tx - (mentions ? 28 * scale_ : 4 * scale_);
         float ty = a.y + (row - ImGui::GetFontSize()) / 2;
-        if (ch.type == chan::GroupDM) ty -= 7 * scale_;
+        if (ch.type == chan::GroupDM) ty -= 6 * scale_;
         Label(dl, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(tx, ty),
               selected || unread ? U32(c.heading) : U32(hov ? c.text : c.muted), name, avail, images);
         ImGui::PopFont();
         if (ch.type == chan::GroupDM) {
-            ImGui::PushFont(fonts_.regular, 12);
+            ImGui::PushFont(fonts_.regular, 11);
             std::string n = std::to_string(ch.recipients.size() + 1) + " members";
-            dl->AddText(ImVec2(tx, ty + 19 * scale_), U32(c.muted), n.c_str());
+            dl->AddText(ImVec2(tx, ty + 16 * scale_), U32(c.muted), n.c_str());
             ImGui::PopFont();
         }
         if (mentions) {
@@ -476,7 +474,7 @@ void App::dmList(float w) {
             ImVec2 sz = ImGui::CalcTextSize(n.c_str());
             float bw = std::max(sz.x + 8 * scale_, 16 * scale_), bh = 16 * scale_;
             ImVec2 ba(b.x - bw - 8 * scale_, a.y + (row - bh) / 2);
-            dl->AddRectFilled(ba, ImVec2(ba.x + bw, ba.y + bh), U32(c.dnd), bh);
+            dl->AddRectFilled(ba, ImVec2(ba.x + bw, ba.y + bh), U32(c.dnd));
             dl->AddText(ImVec2(ba.x + (bw - sz.x) / 2, ba.y + (bh - sz.y) / 2), IM_COL32_WHITE, n.c_str());
             ImGui::PopFont();
         }
@@ -516,18 +514,18 @@ void App::userPanel(float x, float y, float w) {
 void App::avatar(uint64_t user, uint64_t guild, ImVec2 at, float size, bool status) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     if (ImTextureID t = texture(avatarUrl(user, guild)))
-        dl->AddImageRounded(ImTextureRef(t), at, ImVec2(at.x + size, at.y + size), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE,
-                            size / 2);
+        dl->AddImage(ImTextureRef(t), at, ImVec2(at.x + size, at.y + size));
     else
-        dl->AddCircleFilled(ImVec2(at.x + size / 2, at.y + size / 2), size / 2, U32(Colours().selected));
+        dl->AddRectFilled(at, ImVec2(at.x + size, at.y + size), U32(Colours().selected));
     if (!status) return;
     auto p = store_.presence.find(user);
     std::string s = p == store_.presence.end() ? "" : p->second;
     if (s.empty() || s == "offline" || s == "invisible") return;
-    float r = size * 0.18f;
-    ImVec2 centre(at.x + size - r, at.y + size - r);
-    dl->AddCircleFilled(centre, r + 2 * scale_, U32(Colours().sidebar));
-    dl->AddCircleFilled(centre, r, statusColour(s));
+    // A small square on the corner, edged in the background.
+    float d = std::max(5 * scale_, size * 0.32f), edge = std::max(1.0f, scale_);
+    ImVec2 a(at.x + size - d + edge, at.y + size - d + edge);
+    dl->AddRectFilled(ImVec2(a.x - edge, a.y - edge), ImVec2(a.x + d, a.y + d), U32(Colours().sidebar));
+    dl->AddRectFilled(a, ImVec2(a.x + d - edge, a.y + d - edge), statusColour(s));
 }
 
 // --- member list ---
@@ -539,8 +537,8 @@ void App::memberList(float x, float y, float w, float h) {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, c.sidebar);
     ImGui::BeginChild("members", ImVec2(w, h), 0);
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    float row = 42 * scale_, head = 36 * scale_, av = 32 * scale_, side = 8 * scale_;
-    ImGui::Dummy(ImVec2(1, 8 * scale_));
+    float row = 22 * scale_, head = 26 * scale_, av = 16 * scale_, side = 6 * scale_;
+    ImGui::Dummy(ImVec2(1, 6 * scale_));
 
     auto member = [&](uint64_t uid, const std::string& status) {
         ImGui::SetCursorPosX(side);
@@ -549,13 +547,13 @@ void App::memberList(float x, float y, float w, float h) {
         ImGui::InvisibleButton("m", ImVec2(w - side * 2, row));
         bool hov = ImGui::IsItemHovered();
         ImGui::PopID();
-        if (hov) dl->AddRectFilled(a, ImVec2(a.x + w - side * 2, a.y + row), U32(c.hover), 4 * scale_);
+        if (hov) dl->AddRectFilled(a, ImVec2(a.x + w - side * 2, a.y + row), U32(c.hover));
         bool offline = status.empty() || status == "offline";
         if (offline) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.4f);
-        avatar(uid, guild_, ImVec2(a.x + 8 * scale_, a.y + (row - av) / 2), av, true);
+        avatar(uid, guild_, ImVec2(a.x + 6 * scale_, a.y + (row - av) / 2), av, true);
         std::string name = store_.DisplayName(guild_, uid);
-        ImGui::PushFont(fonts_.semibold, kBody);
-        float tx = a.x + av + 20 * scale_, avail = a.x + w - side * 2 - tx - 4 * scale_;
+        ImGui::PushFont(fonts_.regular, 14);
+        float tx = a.x + av + 12 * scale_, avail = a.x + w - side * 2 - tx - 4 * scale_;
         Label(dl, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(tx, a.y + (row - ImGui::GetFontSize()) / 2),
               U32(ImGui::ColorConvertU32ToFloat4(userColour(guild_, uid)), offline ? 0.4f : 1.0f), name, avail, images);
         ImGui::PopFont();
@@ -597,8 +595,8 @@ void App::memberList(float x, float y, float w, float h) {
                     std::string name = it.group == "online" ? "Online" : it.group == "offline" ? "Offline" : "Role";
                     if (auto r = g.roles.find(ParseId(json(it.group))); r != g.roles.end()) name = r->second.name;
                     std::transform(name.begin(), name.end(), name.begin(), ::toupper);
-                    ImGui::SetCursorPos(ImVec2(side + 8 * scale_, yy + 16 * scale_));
-                    ImGui::PushFont(fonts_.semibold, 12);
+                    ImGui::SetCursorPos(ImVec2(side + 6 * scale_, yy + 10 * scale_));
+                    ImGui::PushFont(fonts_.semibold, 11);
                     int count = it.count;
                     if (auto gc = list.groupCounts.find(it.group); gc != list.groupCounts.end()) count = gc->second;
                     ImGui::TextDisabled("%s — %d", name.c_str(), count);
@@ -744,7 +742,7 @@ void App::emojiPicker() {
             ImGui::PopID();
             ImGui::PopID();
             if (hov) {
-                dl->AddRectFilled(a, ImVec2(a.x + cell, a.y + cell), U32(c.hover), 4 * scale_);
+                dl->AddRectFilled(a, ImVec2(a.x + cell, a.y + cell), U32(c.hover));
                 hoverName = ":" + cells[i].name + ":";
             }
             ImVec2 ia(a.x + (cell - img) / 2, a.y + (cell - img) / 2);

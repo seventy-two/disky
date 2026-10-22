@@ -37,7 +37,7 @@ public:
         if (p.heading == 3) size = kH3;
         if (p.subtext) size = kSmall;
         size_ = size * scale_;
-        lineH_ = size_ * 1.375f;
+        lineH_ = size_ * 1.3f;
         emoji_ = jumbo ? kJumbo * scale_ : size_ * 1.375f;
         if (jumbo) lineH_ = emoji_ + 4 * scale_;
         heading_ = p.heading > 0;
@@ -294,11 +294,11 @@ Hit Draw(const Layout& l, ImVec2 at, const ImageFor& images, const std::vector<i
         if (over && p.kind != Piece::Kind::Box && p.kind != Piece::Kind::Bar) hit.piece = &p;
         bool hidden = p.spoiler && std::find(revealed.begin(), revealed.end(), p.spoiler) == revealed.end();
         switch (p.kind) {
-        case Piece::Kind::Box: dl->AddRectFilled(a, b, p.colour, 4); break;
-        case Piece::Kind::Bar: dl->AddRectFilled(a, b, p.colour, 2); break;
+        case Piece::Kind::Box: dl->AddRectFilled(a, b, p.colour); break;
+        case Piece::Kind::Bar: dl->AddRectFilled(a, b, p.colour); break;
         case Piece::Kind::Image: {
             if (hidden) {
-                dl->AddRectFilled(a, b, U32(c.spoiler), 3);
+                dl->AddRectFilled(a, b, U32(c.spoiler));
                 break;
             }
             ImTextureID tex = images ? images(p.image) : ImTextureID(0);
@@ -311,13 +311,13 @@ Hit Draw(const Layout& l, ImVec2 at, const ImageFor& images, const std::vector<i
         case Piece::Kind::Text: {
             float pad = 2;
             if (hidden) {
-                dl->AddRectFilled(ImVec2(a.x - 1, a.y), ImVec2(b.x + 1, b.y), U32(c.spoiler), 3);
+                dl->AddRectFilled(ImVec2(a.x - 1, a.y), ImVec2(b.x + 1, b.y), U32(c.spoiler));
                 break;
             }
-            if (p.spoiler) dl->AddRectFilled(ImVec2(a.x - 1, a.y), ImVec2(b.x + 1, b.y), U32(c.text, 0.1f), 3);
+            if (p.spoiler) dl->AddRectFilled(ImVec2(a.x - 1, a.y), ImVec2(b.x + 1, b.y), U32(c.text, 0.1f));
             if (p.pill)
-                dl->AddRectFilled(ImVec2(a.x - pad, a.y), ImVec2(b.x + pad, b.y), U32(c.accent, over ? 0.6f : 0.3f), 3);
-            if (p.style & style::Code) dl->AddRectFilled(ImVec2(a.x - pad, a.y - 1), ImVec2(b.x + pad, b.y + 1), U32(c.code), 3);
+                dl->AddRectFilled(ImVec2(a.x - pad, a.y), ImVec2(b.x + pad, b.y), U32(c.accent, over ? 0.6f : 0.3f));
+            if (p.style & style::Code) dl->AddRectFilled(ImVec2(a.x - pad, a.y - 1), ImVec2(b.x + pad, b.y + 1), U32(c.code));
             dl->AddText(p.font, p.fontSize, a, p.colour, p.text.c_str());
             float th = std::max(1.0f, p.fontSize / 16);
             if ((p.style & style::Underline) || (!p.link.empty() && over))

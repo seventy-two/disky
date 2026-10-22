@@ -19,7 +19,7 @@ result is a single `disky.exe` with nothing to install.
 - **Sign in** by scanning the QR code with the Discord app on your phone
   (profile picture, then Scan QR Code), or paste a token. The token is kept
   in `%APPDATA%\disky\config.json`, encrypted with DPAPI.
-- **Servers** are down the left in your Discord order (folders flattened);
+- **Servers** are small square icons down the left, in your Discord order (folders flattened);
   **Direct messages** is the top button. Unread channels are bright, with
   mention counts in red.
 - **Messages**: Enter sends, Shift+Enter starts a new line. `@`, `:` and

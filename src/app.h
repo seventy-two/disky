@@ -87,7 +87,8 @@ private:
     void chat(float x, float y, float w, float h);
     void messages(float w, float h);
     float messageHeight(const Message& m, bool groupStart, float w);
-    void message(const Message& m, bool groupStart, float w, float h);
+    // message draws one message; alt puts it on the band colour.
+    void message(const Message& m, bool groupStart, bool alt, float w, float h);
     float attachmentsHeight(const Message& m, float w);
     void attachments(const Message& m, float x, float y, float w);
     float embedHeight(const Embed& e, float w);

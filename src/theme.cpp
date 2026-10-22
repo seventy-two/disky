@@ -17,20 +17,18 @@ ImU32 U32(const ImVec4& c, float alpha) { return ImGui::ColorConvertFloat4ToU32(
 
 namespace {
 
-// Close to Discord's own dark and light themes, so it reads as familiar.
+// kitchensink's dark palette: near-black blue-greys, one blue accent.
+// Order: rail, sidebar, bg, text, muted, heading, accent, link, input,
+// code, border, hover, selected, good, idle, dnd, bad, mention,
+// mentionBar, spoiler, band.
 const Palette kDark = {
-    Hex(0x1E1F22), Hex(0x2B2D31), Hex(0x313338), Hex(0xDBDEE1), Hex(0x949BA4), Hex(0xF2F3F5), Hex(0x5865F2),
-    Hex(0x00A8FC), Hex(0x383A40), Hex(0x2B2D31), Hex(0x1F2023), Hex(0x2E3035), Hex(0x404249), Hex(0x23A55A),
-    Hex(0xF0B232), Hex(0xF23F43), Hex(0xDA373C), Hex(0xF0B232, 0.08f), Hex(0xF0B232), Hex(0x1E1F22),
-};
-
-const Palette kLight = {
-    Hex(0xE3E5E8), Hex(0xF2F3F5), Hex(0xFFFFFF), Hex(0x313338), Hex(0x5C5E66), Hex(0x060607), Hex(0x5865F2),
-    Hex(0x006CE7), Hex(0xEBEDEF), Hex(0xF2F3F5), Hex(0xE1E2E4), Hex(0xF5F5F6), Hex(0xD7D9DC), Hex(0x23A55A),
-    Hex(0xF0B232), Hex(0xF23F43), Hex(0xDA373C), Hex(0xF0B232, 0.12f), Hex(0xC88A00), Hex(0xB5B8BD),
+    Hex(0x101216), Hex(0x1A1D23), Hex(0x15171C), Hex(0xE6E8EC), Hex(0x8C929D), Hex(0xF4F5F7), Hex(0x5AA8FF),
+    Hex(0x5AA8FF), Hex(0x2A2E37), Hex(0x1E2128), Hex(0x2B2F38), Hex(0x262A33), Hex(0x2B2F38), Hex(0x3FB950),
+    Hex(0xD9A23A), Hex(0xF8645A), Hex(0xF8645A), Hex(0xD9A23A, 0.08f), Hex(0xD9A23A), Hex(0x0B0C0F), Hex(0x1A1D23),
 };
 
 Palette current = kDark;
+
 
 std::string fontPath(const char* file) {
     char dir[MAX_PATH];
@@ -61,19 +59,14 @@ ImFont* addFont(const std::string& path, ImFontConfig cfg, const ImWchar* ranges
 
 }  // namespace
 
-bool SystemUsesDarkTheme() {
-    wchar_t forced[16];
-    if (GetEnvironmentVariableW(L"DISKY_THEME", forced, ARRAYSIZE(forced))) return wcscmp(forced, L"light") != 0;
-    DWORD light = 1, size = sizeof(light);
-    RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-                 L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &light, &size);
-    return light == 0;
-}
+// Always dark, whatever Windows uses: disky has one theme.
+bool SystemUsesDarkTheme() { return true; }
 
 const Palette& Colours() { return current; }
 
 void ApplyTheme(bool dark, float scale) {
-    current = dark ? kDark : kLight;
+    (void)dark;
+    current = kDark;
     const Palette& p = current;
     ImGuiStyle& s = ImGui::GetStyle();
     s = ImGuiStyle();
@@ -82,12 +75,13 @@ void ApplyTheme(bool dark, float scale) {
     s.ItemSpacing = ImVec2(8, 4);
     s.ItemInnerSpacing = ImVec2(6, 4);
     s.ScrollbarSize = 8;
+    s.TabRounding = 0;
     s.WindowRounding = 0;
     s.ChildRounding = 0;
-    s.FrameRounding = 6;
-    s.PopupRounding = 6;
-    s.ScrollbarRounding = 4;
-    s.GrabRounding = 4;
+    s.FrameRounding = 0;
+    s.PopupRounding = 0;
+    s.ScrollbarRounding = 0;
+    s.GrabRounding = 0;
     s.WindowBorderSize = 0;
     s.ChildBorderSize = 0;
     s.PopupBorderSize = 1;

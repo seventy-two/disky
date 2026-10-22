@@ -77,7 +77,7 @@ bool iconButton(const char* id, const char* glyph, ImVec2 size, float fontSize, 
     bool hov = ImGui::IsItemHovered();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const Palette& c = Colours();
-    if (hov) dl->AddRectFilled(a, ImVec2(a.x + size.x, a.y + size.y), U32(c.hover), 4);
+    if (hov) dl->AddRectFilled(a, ImVec2(a.x + size.x, a.y + size.y), U32(c.hover));
     ImGui::PushFont(font, fontSize);
     ImVec2 sz = ImGui::CalcTextSize(glyph);
     dl->AddText(ImVec2(a.x + (size.x - sz.x) / 2, a.y + (size.y - sz.y) / 2), U32(hov ? c.heading : c.muted), glyph);
@@ -169,10 +169,10 @@ void App::chat(float x, float y, float w, float h) {
 // --- messages ---
 
 float App::messageHeight(const Message& m, bool groupStart, float w) {
-    float contentW = w - 88 * scale_;
-    float h = (groupStart ? 16 : 2) * scale_;
-    if (m.reply) h += 22 * scale_;
-    if (groupStart) h += 22 * scale_;
+    float contentW = w - 32 * scale_;
+    float h = (groupStart ? 8 : 0) * scale_;
+    if (m.reply) h += 20 * scale_;
+    if (groupStart) h += 20 * scale_;
     if (!normalType(m.type)) return h + 2 * scale_ - (groupStart ? 0 : 0);
     if (!m.content.empty()) h += layoutFor(m, contentW).height;
     h += attachmentsHeight(m, contentW);
@@ -204,7 +204,7 @@ void App::messages(float w, float h) {
     // "new" line between.
     struct Row {
         const Message* m;
-        bool groupStart;
+        bool groupStart, alt;
         float y, h;
         bool day, fresh;
     };
@@ -212,7 +212,7 @@ void App::messages(float w, float h) {
     rows.reserve(ms.list.size());
     float top = ms.reachedStart ? 96 * scale_ : 48 * scale_;
     float y = top;
-    bool freshShown = false;
+    bool freshShown = false, alt = true;
     const Message* prev = nullptr;
     for (const auto& m : ms.list) {
         bool day = !prev || !sameDay(prev->timestamp, m.timestamp);
@@ -221,8 +221,11 @@ void App::messages(float w, float h) {
         bool gs = !prev || day || fresh || prev->authorId != m.authorId || m.timestamp - prev->timestamp > kGroupGap ||
                   m.reply.has_value() || !normalType(m.type) || !normalType(prev->type);
         if (day || fresh) y += 24 * scale_;
+        // Each author's run of messages takes the other background from
+        // the one before, so it's easy to see where one ends.
+        if (gs) alt = !alt;
         float mh = messageHeight(m, gs, cw);
-        rows.push_back({&m, gs, y, mh, day, fresh});
+        rows.push_back({&m, gs, alt, y, mh, day, fresh});
         y += mh;
         prev = &m;
     }
@@ -264,7 +267,7 @@ void App::messages(float w, float h) {
         if (r.y + r.h < scroll - 200 * scale_ || r.y - above > scroll + view + 200 * scale_) continue;
         if (r.day || r.fresh) {
             ImVec2 o = ImGui::GetWindowPos();
-            float ly = o.y + r.y - above / 2 - scroll + (r.groupStart ? 4 * scale_ : 0);
+            float ly = o.y + r.y - above / 2 - scroll;
             ImU32 col = r.fresh ? U32(c.dnd) : U32(c.border);
             dl->AddLine(ImVec2(o.x + 16 * scale_, ly), ImVec2(o.x + cw - 16 * scale_, ly), col);
             ImGui::PushFont(fonts_.semibold, 12);
@@ -278,13 +281,13 @@ void App::messages(float w, float h) {
             if (r.fresh) {
                 ImVec2 sz = ImGui::CalcTextSize("NEW");
                 ImVec2 la(o.x + cw - 16 * scale_ - sz.x - 8 * scale_, ly - sz.y / 2);
-                dl->AddRectFilled(ImVec2(la.x - 4 * scale_, la.y), ImVec2(la.x + sz.x + 4 * scale_, la.y + sz.y), U32(c.dnd), 3 * scale_);
+                dl->AddRectFilled(ImVec2(la.x - 4 * scale_, la.y), ImVec2(la.x + sz.x + 4 * scale_, la.y + sz.y), U32(c.dnd));
                 dl->AddText(la, IM_COL32_WHITE, "NEW");
             }
             ImGui::PopFont();
         }
         ImGui::SetCursorPos(ImVec2(0, r.y));
-        message(*r.m, r.groupStart, cw, r.h);
+        message(*r.m, r.groupStart, r.alt, cw, r.h);
     }
     ImGui::SetCursorPos(ImVec2(0, total));
     ImGui::Dummy(ImVec2(1, 1));
@@ -320,13 +323,14 @@ void App::messages(float w, float h) {
     }
 }
 
-void App::message(const Message& m, bool groupStart, float w, float h) {
+void App::message(const Message& m, bool groupStart, bool alt, float w, float h) {
     const Palette& c = Colours();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     ImVec2 o = ImGui::GetCursorScreenPos();
-    float left = 72 * scale_, contentW = w - 88 * scale_;
-    float y = o.y + (groupStart ? 16 : 2) * scale_;
-    float rowTop = o.y + (groupStart ? 12 : 0) * scale_;
+    float left = 16 * scale_, contentW = w - 32 * scale_;
+    float y = o.y + (groupStart ? 8 : 0) * scale_;
+    float rowTop = o.y;
+    if (alt) dl->AddRectFilled(o, ImVec2(o.x + w, o.y + h), U32(c.band));
     ImVec2 mouse = ImGui::GetMousePos();
     bool hov = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) && mouse.y >= rowTop &&
                mouse.y < o.y + h && mouse.x >= o.x && mouse.x < o.x + w && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
@@ -344,33 +348,28 @@ void App::message(const Message& m, bool groupStart, float w, float h) {
     // The reply's original, in a line above.
     if (m.reply) {
         ImGui::PushFont(fonts_.regular, 13);
-        float ry = y + 4 * scale_;
-        dl->AddBezierCubic(ImVec2(o.x + 36 * scale_, y + 18 * scale_), ImVec2(o.x + 36 * scale_, ry + 2 * scale_),
-                           ImVec2(o.x + 40 * scale_, ry + 2 * scale_), ImVec2(o.x + 66 * scale_, ry + 2 * scale_),
-                           U32(c.muted, 0.6f), 2 * scale_);
-        float rx = o.x + left;
+        float rx = o.x + left, ry = y + 2 * scale_;
+        dl->AddText(ImVec2(rx, ry), U32(c.muted), "\xE2\x86\xB1");  // ↱
+        rx += 16 * scale_;
         if (m.reply->deleted) {
-            dl->AddText(ImVec2(rx, ry - 6 * scale_), U32(c.muted), "Original message was deleted");
+            dl->AddText(ImVec2(rx, ry), U32(c.muted), "Original message was deleted");
         } else {
-            avatar(m.reply->authorId, m.guildId, ImVec2(rx, ry - 6 * scale_), 16 * scale_);
-            rx += 20 * scale_;
             std::string name = "@" + store_.DisplayName(m.guildId, m.reply->authorId);
             ImGui::PushFont(fonts_.semibold, 13);
-            dl->AddText(ImVec2(rx, ry - 6 * scale_), userColour(m.guildId, m.reply->authorId), name.c_str());
-            rx += ImGui::CalcTextSize(name.c_str()).x + 6 * scale_;
+            rx += Label(dl, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(rx, ry), userColour(m.guildId, m.reply->authorId), name, 0,
+                        [this](const std::string& u) { return texture(u); }) +
+                  6 * scale_;
             ImGui::PopFont();
             std::string text = PlainText(m.reply->content, resolver(m.guildId));
             if (text.empty()) text = m.reply->attachments ? "Click to see attachment" : "";
-            float avail = o.x + w - 16 * scale_ - rx;
-            while (!text.empty() && ImGui::CalcTextSize(text.c_str()).x > avail) text.resize(text.size() * 9 / 10);
-            dl->AddText(ImVec2(rx, ry - 6 * scale_), U32(c.muted), text.c_str());
+            Label(dl, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(rx, ry), U32(c.muted), text, o.x + w - 16 * scale_ - rx,
+                  [this](const std::string& u) { return texture(u); });
         }
         ImGui::PopFont();
-        y += 22 * scale_;
+        y += 20 * scale_;
     }
 
     if (groupStart) {
-        avatar(m.authorId, m.guildId, ImVec2(o.x + 16 * scale_, y), 40 * scale_);
         ImGui::PushFont(fonts_.semibold, kBody);
         float nx = o.x + left;
         nx += Label(dl, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(nx, y), userColour(m.guildId, m.authorId), author, 0,
@@ -380,20 +379,22 @@ void App::message(const Message& m, bool groupStart, float w, float h) {
         if (const User* u = store_.FindUser(m.authorId); u && u->bot) {
             ImGui::PushFont(fonts_.semibold, 10);
             ImVec2 sz = ImGui::CalcTextSize("APP");
-            dl->AddRectFilled(ImVec2(nx, y + 3 * scale_), ImVec2(nx + sz.x + 8 * scale_, y + 3 * scale_ + sz.y + 2 * scale_), U32(c.accent), 3 * scale_);
+            dl->AddRectFilled(ImVec2(nx, y + 3 * scale_), ImVec2(nx + sz.x + 8 * scale_, y + 3 * scale_ + sz.y + 2 * scale_), U32(c.accent));
             dl->AddText(ImVec2(nx + 4 * scale_, y + 4 * scale_), IM_COL32_WHITE, "APP");
             ImGui::PopFont();
             nx += sz.x + 14 * scale_;
         }
         ImGui::PushFont(fonts_.regular, 12);
         std::string t = formatTime(m.timestamp, true);
-        dl->AddText(ImVec2(nx, y + 4 * scale_), U32(c.muted), t.c_str());
+        dl->AddText(ImVec2(nx, y + 3 * scale_), U32(c.muted), t.c_str());
         ImGui::PopFont();
-        y += 22 * scale_;
+        y += 20 * scale_;
     } else if (hov && normalType(m.type)) {
+        // A follow-on message's time, on the right while hovered.
         ImGui::PushFont(fonts_.regular, 11);
         std::string t = formatTime(m.timestamp, false);
-        dl->AddText(ImVec2(o.x + 22 * scale_, y + 4 * scale_), U32(c.muted), t.c_str());
+        float tw = ImGui::CalcTextSize(t.c_str()).x;
+        dl->AddText(ImVec2(o.x + w - 160 * scale_ - tw, y + 4 * scale_), U32(c.muted), t.c_str());  // clear of the toolbar
         ImGui::PopFont();
     }
 
@@ -551,8 +552,8 @@ void App::toolbar(const Message& m, ImVec2 topRight) {
     float w = n * b + pad * 2;
     ImVec2 a(topRight.x - w, std::max(topRight.y - 14 * scale_, ImGui::GetWindowPos().y + 2 * scale_));
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + b + pad * 2), U32(c.bg), 6 * scale_);
-    dl->AddRect(a, ImVec2(a.x + w, a.y + b + pad * 2), U32(c.border), 6 * scale_);
+    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + b + pad * 2), U32(c.bg));
+    dl->AddRect(a, ImVec2(a.x + w, a.y + b + pad * 2), U32(c.border));
     float x = a.x + pad;
     auto button = [&](const char* id, const char* glyph, const char* tip) {
         ImGui::SetCursorScreenPos(ImVec2(x, a.y + pad));
@@ -615,8 +616,8 @@ void App::attachments(const Message& m, float x, float y, float w) {
         } else {
             float bw = std::min(w, 400 * scale_), bh = 52 * scale_;
             ImVec2 b0(x, y + 4 * scale_), b1(x + bw, y + 4 * scale_ + bh);
-            dl->AddRectFilled(b0, b1, U32(c.code), 6 * scale_);
-            dl->AddRect(b0, b1, U32(c.border), 6 * scale_);
+            dl->AddRectFilled(b0, b1, U32(c.code));
+            dl->AddRect(b0, b1, U32(c.border));
             ImGui::SetCursorScreenPos(b0);
             ImGui::PushID(int(a.id & 0x7FFFFFFF));
             bool clicked = ImGui::InvisibleButton("file", ImVec2(bw, bh));
@@ -654,18 +655,18 @@ void App::media(const std::string& key, const std::string& still, const std::str
     float r = 6 * scale_;
     ID3D11ShaderResourceView* frame = playing ? video_->Frame() : nullptr;
     if (frame) {
-        dl->AddImageRounded(ImTextureRef(ImTextureID((intptr_t)frame)), at, end, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, r);
+        dl->AddImage(ImTextureRef(ImTextureID((intptr_t)frame)), at, end, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE);
     } else if (ImTextureID t = still.empty() ? ImTextureID(0) : texture(still)) {
-        dl->AddImageRounded(ImTextureRef(t), at, end, ImVec2(0, 0), ImVec2(1, 1), hidden ? IM_COL32(40, 40, 40, 255) : IM_COL32_WHITE, r);
+        dl->AddImage(ImTextureRef(t), at, end, ImVec2(0, 0), ImVec2(1, 1), hidden ? IM_COL32(40, 40, 40, 255) : IM_COL32_WHITE);
     } else {
-        dl->AddRectFilled(at, end, U32(c.code), r);
+        dl->AddRectFilled(at, end, U32(c.code));
     }
     if (hidden) {
-        dl->AddRectFilled(at, end, U32(c.spoiler, 0.85f), r);
+        dl->AddRectFilled(at, end, U32(c.spoiler, 0.85f));
         ImGui::PushFont(fonts_.bold, 13);
         ImVec2 sz = ImGui::CalcTextSize("SPOILER");
         ImVec2 p(at.x + (size.x - sz.x) / 2, at.y + (size.y - sz.y) / 2);
-        dl->AddRectFilled(ImVec2(p.x - 10 * scale_, p.y - 5 * scale_), ImVec2(p.x + sz.x + 10 * scale_, p.y + sz.y + 5 * scale_), IM_COL32(0, 0, 0, 180), 12 * scale_);
+        dl->AddRectFilled(ImVec2(p.x - 10 * scale_, p.y - 5 * scale_), ImVec2(p.x + sz.x + 10 * scale_, p.y + sz.y + 5 * scale_), IM_COL32(0, 0, 0, 180));
         dl->AddText(p, IM_COL32_WHITE, "SPOILER");
         ImGui::PopFont();
         if (hov) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
@@ -703,10 +704,10 @@ void App::media(const std::string& key, const std::string& still, const std::str
             dl->AddText(ImVec2(end.x - 28 * scale_, by + 3 * scale_), IM_COL32_WHITE, icon::Open);
             ImGui::PopFont();
             float ty = by + 11 * scale_;
-            dl->AddRectFilled(ImVec2(trackX, ty - 2 * scale_), ImVec2(trackEnd, ty + 2 * scale_), IM_COL32(255, 255, 255, 80), 2 * scale_);
+            dl->AddRectFilled(ImVec2(trackX, ty - 2 * scale_), ImVec2(trackEnd, ty + 2 * scale_), IM_COL32(255, 255, 255, 80));
             if (dur > 0)
                 dl->AddRectFilled(ImVec2(trackX, ty - 2 * scale_), ImVec2(trackX + float((trackEnd - trackX) * pos / dur), ty + 2 * scale_),
-                                  U32(c.accent), 2 * scale_);
+                                  U32(c.accent));
             if (clicked && onBar) {
                 if (mouse.x < trackX)
                     video_->TogglePause();
@@ -784,9 +785,8 @@ void App::embed(const Message& m, const Embed& e, float x, float y, float w) {
         return;
     }
     float bw = std::min(w, 432 * scale_), pad = 12 * scale_, h = embedHeight(e, w);
-    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + bw, y + h), U32(c.code), 4 * scale_);
-    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + 4 * scale_, y + h), e.hasColour ? U32(Hex(e.colour)) : U32(c.border), 4 * scale_,
-                      ImDrawFlags_RoundCornersLeft);
+    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + bw, y + h), U32(c.code));
+    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + 4 * scale_, y + h), e.hasColour ? U32(Hex(e.colour)) : U32(c.border));
     bool thumb = !e.thumbnail.proxyUrl.empty() && e.image.proxyUrl.empty() && e.video.url.empty();
     float inner = bw - pad * 2 - 4 * scale_ - (thumb ? 88 * scale_ : 0);
     float ix = x + 4 * scale_ + pad, iy = y + pad;
@@ -839,7 +839,7 @@ void App::embed(const Message& m, const Embed& e, float x, float y, float w) {
         ImVec2 ta(x + bw - pad - ts, y + pad);
         if (ImTextureID t = texture(e.thumbnail.proxyUrl)) {
             ImVec2 sz = fit(float(e.thumbnail.width), float(e.thumbnail.height), ts, ts);
-            dl->AddImageRounded(ImTextureRef(t), ta, ImVec2(ta.x + sz.x, ta.y + sz.y), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 4 * scale_);
+            dl->AddImage(ImTextureRef(t), ta, ImVec2(ta.x + sz.x, ta.y + sz.y), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE);
         }
     }
     if (!e.footer.empty()) {
@@ -890,8 +890,8 @@ void App::reactions(const Message& m, float x, float y, float w) {
         bool hov = ImGui::IsItemHovered();
         ImGui::PopID();
         ImGui::PopID();
-        dl->AddRectFilled(a, b, r.me ? U32(c.accent, 0.25f) : U32(c.code), 8 * scale_);
-        dl->AddRect(a, b, r.me ? U32(c.accent) : (hov ? U32(c.muted) : U32(c.code)), 8 * scale_);
+        dl->AddRectFilled(a, b, r.me ? U32(c.accent, 0.25f) : U32(c.code));
+        dl->AddRect(a, b, r.me ? U32(c.accent) : (hov ? U32(c.muted) : U32(c.code)));
         std::string url = r.emoji.id ? "https://cdn.discordapp.com/emojis/" + IdString(r.emoji.id) + ".png?size=48"
                                      : "https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/72x72/" + TwemojiName(r.emoji.name) + ".png";
         ImVec2 ia(a.x + 6 * scale_, a.y + (ph - img) / 2);
@@ -1022,14 +1022,13 @@ void App::autocomplete(ImVec2 above, float w) {
         bool clicked = ImGui::InvisibleButton("s", ImVec2(w - pad * 2, row));
         if (ImGui::IsItemHovered()) suggestion_ = i;
         ImGui::PopID();
-        if (i == suggestion_) dl->AddRectFilled(ra, rb, U32(c.selected), 4 * scale_);
+        if (i == suggestion_) dl->AddRectFilled(ra, rb, U32(c.selected));
         float tx = ra.x + 8 * scale_, img = 22 * scale_;
         if (!s.image.empty()) {
             if (ImTextureID t = texture(s.image)) {
                 ImVec2 ia(tx, ra.y + (row - img) / 2);
                 bool round = s.colour != 0;
-                dl->AddImageRounded(ImTextureRef(t), ia, ImVec2(ia.x + img, ia.y + img), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE,
-                                    round ? img / 2 : 0);
+                dl->AddImage(ImTextureRef(t), ia, ImVec2(ia.x + img, ia.y + img), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE);
             }
             tx += img + 10 * scale_;
         }
@@ -1052,7 +1051,7 @@ void App::composer(float x, float y, float w, float* height) {
     if (!canSend(channel_)) {
         float bh = 44 * scale_;
         ImVec2 a(boxX, top + 4 * scale_);
-        dl->AddRectFilled(a, ImVec2(a.x + boxW, a.y + bh), U32(c.input), 8 * scale_);
+        dl->AddRectFilled(a, ImVec2(a.x + boxW, a.y + bh), U32(c.input));
         dl->AddText(ImVec2(a.x + 16 * scale_, a.y + (bh - ImGui::GetFontSize()) / 2), U32(c.muted),
                     "You can't send messages in this channel.");
         *height = bh + 28 * scale_;
@@ -1063,7 +1062,7 @@ void App::composer(float x, float y, float w, float* height) {
     float barH = 30 * scale_;
     auto bar = [&](const std::string& text, bool* cancel) {
         ImVec2 a(boxX, top + used);
-        dl->AddRectFilled(a, ImVec2(a.x + boxW, a.y + barH), U32(c.sidebar), 8 * scale_, ImDrawFlags_RoundCornersTop);
+        dl->AddRectFilled(a, ImVec2(a.x + boxW, a.y + barH), U32(c.sidebar));
         ImGui::PushFont(fonts_.regular, 13);
         dl->AddText(ImVec2(a.x + 14 * scale_, a.y + (barH - ImGui::GetFontSize()) / 2), U32(c.muted), text.c_str());
         ImGui::PopFont();
@@ -1100,7 +1099,7 @@ void App::composer(float x, float y, float w, float* height) {
                 used += fh + 4 * scale_;
             }
             ImVec2 a(fx, top + used);
-            dl->AddRectFilled(a, ImVec2(a.x + fw, a.y + fh), U32(c.sidebar), 6 * scale_);
+            dl->AddRectFilled(a, ImVec2(a.x + fw, a.y + fh), U32(c.sidebar));
             dl->AddText(ImVec2(a.x + 10 * scale_, a.y + (fh - ImGui::GetFontSize()) / 2), U32(c.text), label.c_str());
             ImGui::SetCursorScreenPos(ImVec2(a.x + fw - 28 * scale_, a.y + 5 * scale_));
             ImGui::PushID(int(i));
@@ -1130,8 +1129,7 @@ void App::composer(float x, float y, float w, float* height) {
     float boxH = std::clamp(textH + 22 * scale_, 44 * scale_, std::max(44 * scale_, ImGui::GetMainViewport()->Size.y * 0.4f));
     if (draft_[0] == 0) boxH = 44 * scale_;
     ImVec2 a(boxX, top + used);
-    dl->AddRectFilled(a, ImVec2(a.x + boxW, a.y + boxH), U32(c.input), 8 * scale_,
-                      (replyTo_ || editing_) && files_.empty() && composeError_.empty() ? ImDrawFlags_RoundCornersBottom : 0);
+    dl->AddRectFilled(a, ImVec2(a.x + boxW, a.y + boxH), U32(c.input));
     ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + (44 * scale_ - btn) / 2));
     if (iconButton("attach", icon::Attach, ImVec2(btn, btn), 18, fonts_.regular, "Attach files")) {
         wchar_t buf[8192] = {};
