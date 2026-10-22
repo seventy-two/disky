@@ -14,6 +14,7 @@ namespace {
 
 constexpr int64_t kGroupGap = 7 * 60 * 1000;  // messages closer than this share a header
 constexpr float stickerSize = 128;
+constexpr float kNames = 130;  // the name column's width, before scaling
 
 bool normalType(int t) { return t == 0 || t == 19 || t == 20 || t == 21 || t == 23; }
 
@@ -171,18 +172,20 @@ void App::chat(float x, float y, float w, float h) {
 // --- messages ---
 
 float App::messageHeight(const Message& m, bool groupStart, float w) {
-    float contentW = w - 32 * scale_;
-    float h = (groupStart ? 8 : 0) * scale_;
+    float contentW = w - (32 + kNames + 12) * scale_;
+    float h = (groupStart ? 4 : 0) * scale_;
     if (m.reply) h += 20 * scale_;
-    if (groupStart) h += 20 * scale_;
-    if (!normalType(m.type)) return h + 2 * scale_ - (groupStart ? 0 : 0);
-    if (!m.content.empty()) h += layoutFor(m, contentW).height;
-    h += attachmentsHeight(m, contentW);
-    for (const auto& e : m.embeds) h += embedHeight(e, contentW) + 4 * scale_;
-    h += m.stickers.size() * (stickerSize + 4) * scale_;
-    h += reactionsHeight(m, contentW);
-    if (m.failed) h += 20 * scale_;
-    return h + 2 * scale_;
+    float line = kBody * 1.3f * scale_;
+    if (!normalType(m.type)) return h + line + 2 * scale_;
+    float body = 0;
+    if (!m.content.empty()) body += layoutFor(m, contentW).height;
+    body += attachmentsHeight(m, contentW);
+    for (const auto& e : m.embeds) body += embedHeight(e, contentW) + 4 * scale_;
+    body += m.stickers.size() * (stickerSize + 4) * scale_;
+    body += reactionsHeight(m, contentW);
+    if (m.failed) body += 20 * scale_;
+    // At least a line, for the name beside it.
+    return h + std::max(body, line) + 2 * scale_;
 }
 
 void App::messages(float w, float h) {
@@ -328,8 +331,10 @@ void App::message(const Message& m, bool groupStart, bool alt, float w, float h)
     const Palette& c = Colours();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     ImVec2 o = ImGui::GetCursorScreenPos();
-    float left = 16 * scale_, contentW = w - 32 * scale_;
-    float y = o.y + (groupStart ? 8 : 0) * scale_;
+    // Names in a column on the left, right-aligned; messages beside them.
+    float nameW = kNames * scale_;
+    float left = (16 + kNames + 12) * scale_, contentW = w - left - 16 * scale_;
+    float y = o.y + (groupStart ? 4 : 0) * scale_;
     float rowTop = o.y;
     if (alt) dl->AddRectFilled(o, ImVec2(o.x + w, o.y + h), U32(c.band));
     ImVec2 mouse = ImGui::GetMousePos();
@@ -370,32 +375,41 @@ void App::message(const Message& m, bool groupStart, bool alt, float w, float h)
         y += 20 * scale_;
     }
 
-    if (groupStart) {
+    // The author, at the start of their run of messages.
+    float textY = y + (kBody * 1.3f * scale_ - kBody * scale_) / 2;
+    if (groupStart || !normalType(m.type)) {
         ImGui::PushFont(fonts_.semibold, kBody);
-        float nx = o.x + left;
-        nx += Label(dl, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(nx, y), userColour(m.guildId, m.authorId), author, 0,
-                    [this](const std::string& u) { return texture(u); }) +
-              8 * scale_;
+        bool bot = false;
+        if (const User* u = store_.FindUser(m.authorId)) bot = u->bot;
+        float badge = 0;
+        if (bot) {
+            ImGui::PushFont(fonts_.semibold, 10);
+            badge = ImGui::CalcTextSize("APP").x + 12 * scale_;
+            ImGui::PopFont();
+        }
+        ImageFor images = [this](const std::string& u) { return texture(u); };
+        float nw = Label(nullptr, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(), 0, author, nameW - badge, images);
+        float nx = o.x + 16 * scale_ + nameW - nw;
+        Label(dl, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(nx, textY), userColour(m.guildId, m.authorId), author,
+              nameW - badge, images);
         ImGui::PopFont();
-        if (const User* u = store_.FindUser(m.authorId); u && u->bot) {
+        if (bot) {
             ImGui::PushFont(fonts_.semibold, 10);
             ImVec2 sz = ImGui::CalcTextSize("APP");
-            dl->AddRectFilled(ImVec2(nx, y + 3 * scale_), ImVec2(nx + sz.x + 8 * scale_, y + 3 * scale_ + sz.y + 2 * scale_), U32(c.accent));
-            dl->AddText(ImVec2(nx + 4 * scale_, y + 4 * scale_), IM_COL32_WHITE, "APP");
+            float bx = nx - badge + 2 * scale_, by = textY + 3 * scale_;
+            dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + sz.x + 6 * scale_, by + sz.y + 2 * scale_), U32(c.accent));
+            dl->AddText(ImVec2(bx + 3 * scale_, by + 1 * scale_), IM_COL32_WHITE, "APP");
             ImGui::PopFont();
-            nx += sz.x + 14 * scale_;
         }
-        ImGui::PushFont(fonts_.regular, 12);
-        std::string t = formatTime(m.timestamp, true);
-        dl->AddText(ImVec2(nx, y + 3 * scale_), U32(c.muted), t.c_str());
-        ImGui::PopFont();
-        y += 20 * scale_;
-    } else if (hov && normalType(m.type)) {
-        // A follow-on message's time, on the right while hovered.
+        if (ImGui::IsMouseHoveringRect(ImVec2(nx, textY), ImVec2(o.x + 16 * scale_ + nameW, textY + kBody * scale_)) && hov)
+            if (const User* u = store_.FindUser(m.authorId)) ImGui::SetTooltip("%s", u->username.c_str());
+    }
+    if (hov) {
+        // The time, on the right while hovered, clear of the toolbar.
         ImGui::PushFont(fonts_.regular, 11);
-        std::string t = formatTime(m.timestamp, false);
+        std::string t = formatTime(m.timestamp, true);
         float tw = ImGui::CalcTextSize(t.c_str()).x;
-        dl->AddText(ImVec2(o.x + w - 160 * scale_ - tw, y + 4 * scale_), U32(c.muted), t.c_str());  // clear of the toolbar
+        dl->AddText(ImVec2(o.x + w - 160 * scale_ - tw, textY + 2 * scale_), U32(c.muted), t.c_str());
         ImGui::PopFont();
     }
 
@@ -410,15 +424,9 @@ void App::message(const Message& m, bool groupStart, bool alt, float w, float h)
             {18, "started a thread."},
         };
         auto it = lines.find(m.type);
-        ImGui::PushFont(fonts_.semibold, kBody);
-        dl->AddText(ImVec2(o.x + left, y), userColour(m.guildId, m.authorId), author.c_str());
-        float nx = o.x + left + ImGui::CalcTextSize(author.c_str()).x + 6 * scale_;
-        ImGui::PopFont();
         std::string line = it != lines.end() ? it->second : (m.content.empty() ? "did something Discord didn't explain." : m.content);
-        dl->AddText(ImVec2(nx, y), U32(c.muted), line.c_str());
-        ImGui::PushFont(fonts_.regular, 12);
-        std::string t = formatTime(m.timestamp, true);
-        dl->AddText(ImVec2(nx + ImGui::CalcTextSize(line.c_str()).x * 1.25f + 8 * scale_, y + 3 * scale_), U32(c.muted), t.c_str());
+        ImGui::PushFont(fonts_.italic, kBody);
+        dl->AddText(ImVec2(o.x + left, textY), U32(c.muted), line.c_str());
         ImGui::PopFont();
         return;
     }
