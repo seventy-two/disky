@@ -1005,6 +1005,9 @@ void App::emojiPicker() {
         ImGui::SetCursorPosY(top + rows * cell + 6 * scale_);
     }
     if (sections.empty()) ImGui::TextDisabled("No emoji match.");
+    // An item after the last SetCursorPosY, so the list's height counts
+    // (ImGui asserts otherwise).
+    ImGui::Dummy(ImVec2(0, 0));
     ImGui::EndChild();
     if (!hoverName.empty()) ImGui::SetTooltip("%s", hoverName.c_str());
     if (picked) {
