@@ -1,4 +1,4 @@
-// Drawing the open channel: its header, messages with their replies,
+// Drawing the open channel: its title bar header, messages with their replies,
 // attachments, embeds and reactions, and the composer.
 #include <windows.h>
 #include <commdlg.h>
@@ -107,12 +107,8 @@ const Layout& App::textLayout(const std::string& key, const std::string& text, f
 // --- the channel ---
 
 void App::chat(float x, float y, float w, float h) {
-    const Palette& c = Colours();
-    float header = 48 * scale_;
     ImGui::SetCursorPos(ImVec2(x, y));
     ImGui::BeginChild("chat", ImVec2(w, h), 0, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImVec2 o = ImGui::GetWindowPos();
     if (!channel_) {
         const char* text = guild_ ? "No channels you can read here." : "Pick a conversation.";
         ImVec2 sz = ImGui::CalcTextSize(text);
@@ -121,53 +117,73 @@ void App::chat(float x, float y, float w, float h) {
         ImGui::EndChild();
         return;
     }
-    const Channel& ch = store_.channels[channel_];
-    // Header: the channel's name and topic, and the member list button.
-    ImGui::PushFont(fonts_.semibold, kBody);
-    std::string title = ch.IsPrivate() ? store_.ChannelName(channel_) : ch.name;
-    float tx = 16 * scale_;
-    if (!ch.IsPrivate()) {
-        ImGui::PushFont(fonts_.regular, 22);
-        dl->AddText(ImVec2(o.x + tx, o.y + (header - ImGui::GetFontSize()) / 2), U32(c.muted), "#");
-        ImGui::PopFont();
-        tx += 22 * scale_;
-    }
-    float ty = (header - ImGui::GetFontSize()) / 2;
-    tx += Label(dl, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(o.x + tx, o.y + ty), U32(c.heading), title, w * 0.5f,
-                [this](const std::string& u) { return texture(u); }) +
-          12 * scale_;
-    ImGui::PopFont();
-    bool hasMembers = guild_ || ch.type == chan::GroupDM;
-    float right = hasMembers ? 48 * scale_ : 12 * scale_;
-    if (!ch.topic.empty()) {
-        std::string topic = ch.topic.substr(0, ch.topic.find('\n'));
-        NoteText(topic);
-        ImGui::PushFont(fonts_.regular, 14);
-        float avail = w - right - tx - 12 * scale_;
-        if (avail > 60 * scale_) {
-            dl->AddLine(ImVec2(o.x + tx - 6 * scale_, o.y + 14 * scale_), ImVec2(o.x + tx - 6 * scale_, o.y + header - 14 * scale_), U32(c.border));
-            std::string shown = topic;
-            while (!shown.empty() && ImGui::CalcTextSize(shown.c_str()).x > avail) shown.pop_back();
-            if (shown.size() < topic.size()) shown += "…";
-            dl->AddText(ImVec2(o.x + tx + 6 * scale_, o.y + (header - ImGui::GetFontSize()) / 2), U32(c.muted), shown.c_str());
-        }
-        ImGui::PopFont();
-    }
-    if (hasMembers) {
-        ImGui::SetCursorPos(ImVec2(w - 44 * scale_, (header - 32 * scale_) / 2));
-        if (iconButton("members", icon::People, ImVec2(32 * scale_, 32 * scale_), 18, fonts_.regular,
-                       config_.members ? "Hide the member list" : "Show the member list")) {
-            config_.members = !config_.members;
-            SaveConfig(config_);
-        }
-    }
-    dl->AddLine(ImVec2(o.x, o.y + header - 1), ImVec2(o.x + w, o.y + header - 1), U32(c.border));
-
+    // The channel's name and topic are in the title bar (channelHeader),
+    // with the member list button.
     float composerH = composerH_ > 0 ? composerH_ : 68 * scale_;
-    ImGui::SetCursorPos(ImVec2(0, header));
-    messages(w, h - header - composerH);
+    ImGui::SetCursorPos(ImVec2(0, 0));
+    messages(w, h - composerH);
     composer(0, h - composerH, w, &composerH_);
     ImGui::EndChild();
+}
+
+void App::channelHeader(float left, float right) {
+    const Palette& c = Colours();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 o = ImGui::GetWindowPos();
+    float w = ImGui::GetWindowWidth(), barH = captionH_;
+    const Channel& ch = store_.channels[channel_];
+    std::string title = ch.IsPrivate() ? store_.ChannelName(channel_) : "#" + ch.name;
+    std::string topic = ch.topic.substr(0, ch.topic.find('\n'));
+    NoteText(topic);
+    ImageFor images = [this](const std::string& u) { return texture(u); };
+
+    // Centred in the window, kept clear of what's either side.
+    ImGui::PushFont(fonts_.semibold, kSmall);
+    float titleW = Label(nullptr, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(0, 0), 0, title, 0, images);
+    ImGui::PopFont();
+    ImGui::PushFont(fonts_.regular, kSmall);
+    float gap = 14 * scale_;
+    float topicW = topic.empty() ? 0 : ImGui::CalcTextSize(topic.c_str()).x;
+    float side = std::max(left, right) + 12 * scale_;
+    float avail = w - side * 2;
+    titleW = std::min(titleW, avail);
+    float room = avail - titleW - gap;
+    std::string shown = topic;
+    if (topicW > room) {
+        if (room < 60 * scale_) {
+            shown.clear();
+        } else {
+            while (!shown.empty() && ImGui::CalcTextSize((shown + "…").c_str()).x > room) shown.pop_back();
+            // Don't cut a UTF-8 character in half.
+            while (!shown.empty() && (shown.back() & 0xC0) == 0x80) shown.pop_back();
+            if (!shown.empty() && (unsigned char)shown.back() >= 0xC0) shown.pop_back();
+            shown += "…";
+        }
+        topicW = shown.empty() ? 0 : ImGui::CalcTextSize(shown.c_str()).x;
+    }
+    float total = titleW + (shown.empty() ? 0 : gap + topicW);
+    float x = o.x + (w - total) / 2, ty = o.y + (barH - ImGui::GetFontSize()) / 2;
+    ImGui::PopFont();
+    ImGui::PushFont(fonts_.semibold, kSmall);
+    Label(dl, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(x, ty), U32(c.heading), title, titleW, images);
+    ImGui::PopFont();
+    if (!shown.empty()) {
+        float lx = x + titleW + gap / 2;
+        dl->AddLine(ImVec2(lx, o.y + 9 * scale_), ImVec2(lx, o.y + barH - 9 * scale_), U32(c.border));
+        ImGui::PushFont(fonts_.regular, kSmall);
+        dl->AddText(ImVec2(x + titleW + gap, ty), U32(c.muted), shown.c_str());
+        ImGui::PopFont();
+        // The whole topic when it's cut short.
+        if (shown != topic && ImGui::IsMouseHoveringRect(ImVec2(x + titleW + gap, o.y), ImVec2(x + total, o.y + barH)) &&
+            ImGui::IsWindowHovered()) {
+            ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(480 * scale_, FLT_MAX));
+            ImGui::BeginTooltip();
+            ImGui::PushTextWrapPos(460 * scale_);
+            ImGui::TextUnformatted(ch.topic.c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::EndTooltip();
+        }
+    }
 }
 
 // --- messages ---

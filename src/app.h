@@ -88,6 +88,9 @@ private:
     void dmList(float w);
     void userPanel(float x, float y, float w);
     void chat(float x, float y, float w, float h);
+    // channelHeader draws the open channel's name and topic in the title
+    // bar, centred, clear of left and right pixels at either end.
+    void channelHeader(float left, float right);
     void messages(float w, float h);
     float messageHeight(const Message& m, bool groupStart, float w);
     // message draws one message; alt puts it on the band colour.

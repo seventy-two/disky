@@ -129,18 +129,47 @@ void App::titleBar() {
     ImGui::PushFont(fonts_.semibold, kSmall);
     float ty = (captionH_ - ImGui::GetFontSize()) / 2;
     dl->AddText(ImVec2(o.x + 12 * scale_, o.y + ty), U32(c.muted), "disky");
-    std::string mid = ready_ && channel_ ? channelTitle(channel_) : "";
-    if (!status_.empty() && api_) mid = status_;
-    if (!mid.empty()) {
-        ImVec2 sz = ImGui::CalcTextSize(mid.c_str());
-        dl->AddText(ImVec2(o.x + (w - sz.x) / 2, o.y + ty), U32(status_.empty() ? c.muted : c.idle), mid.c_str());
-    }
+    float left = 12 * scale_ + ImGui::CalcTextSize("disky").x;
     ImGui::PopFont();
 
-    // Window buttons, the size Windows draws them.
+    // Window buttons, the size Windows draws them, with the bell and the
+    // member list button beside them.
     noDrag_.clear();
-    float bw = 46 * scale_;
-    if (ready_) bell(ImVec2(o.x + w - bw * 4, o.y), bw, captionH_);
+    float bw = 46 * scale_, right = bw * 3;
+    if (ready_) {
+        right += bw;
+        bell(ImVec2(o.x + w - right, o.y), bw, captionH_);
+        auto ch = store_.channels.find(channel_);
+        if (ch != store_.channels.end() && (guild_ || ch->second.type == chan::GroupDM)) {
+            right += 36 * scale_;
+            ImVec2 a(o.x + w - right, o.y);
+            noDrag_.push_back(ImRect(ImVec2(a.x - o.x, 0), ImVec2(a.x - o.x + 36 * scale_, captionH_)));
+            ImGui::SetCursorScreenPos(a);
+            bool pressed = ImGui::InvisibleButton("members", ImVec2(36 * scale_, captionH_));
+            bool hov = ImGui::IsItemHovered();
+            if (hov) {
+                dl->AddRectFilled(a, ImVec2(a.x + 36 * scale_, a.y + captionH_), U32(c.hover));
+                ImGui::SetTooltip(config_.members ? "Hide the member list" : "Show the member list");
+            }
+            ImGui::PushFont(fonts_.regular, 14);
+            ImVec2 sz = ImGui::CalcTextSize(icon::People);
+            dl->AddText(ImVec2(a.x + (36 * scale_ - sz.x) / 2, a.y + (captionH_ - sz.y) / 2),
+                        U32(hov || config_.members ? c.heading : c.muted), icon::People);
+            ImGui::PopFont();
+            if (pressed) {
+                config_.members = !config_.members;
+                SaveConfig(config_);
+            }
+        }
+    }
+    if (!status_.empty() && api_) {
+        ImGui::PushFont(fonts_.semibold, kSmall);
+        ImVec2 sz = ImGui::CalcTextSize(status_.c_str());
+        dl->AddText(ImVec2(o.x + (w - sz.x) / 2, o.y + ty), U32(c.idle), status_.c_str());
+        ImGui::PopFont();
+    } else if (ready_ && channel_) {
+        channelHeader(left, right);
+    }
     const char* glyphs[] = {icon::Minimise, IsZoomed(hwnd_) ? icon::Restore : icon::Maximise, icon::Close};
     ImGui::PushFont(fonts_.regular, 10);
     for (int i = 0; i < 3; i++) {
