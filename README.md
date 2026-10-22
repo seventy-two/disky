@@ -25,6 +25,10 @@ result is a single `disky.exe` with nothing to install.
 - **Messages**: Enter sends, Shift+Enter starts a new line. `@`, `:` and
   `#` suggest people, emoji and channels (Tab or Enter picks). Up in an empty
   box edits your last message; Escape cancels a reply or edit.
+- **Fold** the server list, the channel list or the member list away with
+  the small chevron on each; a thin strip brings it back.
+- **Typing**: who else is typing shows under the box; disky tells Discord
+  when you're typing, as its own app does.
 - **Attach** with the paperclip, by dropping files on the window, or by
   pasting an image.
 - Hover a message to react, reply, edit or delete (Shift+click the bin to

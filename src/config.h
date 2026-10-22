@@ -20,6 +20,8 @@ struct Config {
     uint64_t guild = 0, channel = 0;
     bool notify = true;
     bool members = true;  // the member list is shown
+    bool rail = true;      // the server list is shown
+    bool channels = true;  // the channel or DM list is shown
     float volume = 0.5f;  // for videos
     std::vector<std::string> recentEmoji;  // newest first, as typed in a message
 };

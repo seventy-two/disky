@@ -103,6 +103,12 @@ private:
     void memberList(float x, float y, float w, float h);
     void emojiPicker();
     void settings();
+    // fold draws a column folded away: a thin strip that opens it again.
+    // It returns true when clicked.
+    bool fold(const char* id, float x, float y, float h, bool pointsRight);
+    // foldButton is the small chevron that folds a column, at a screen
+    // position; true when clicked.
+    bool foldButton(const char* id, ImVec2 at, bool pointsRight, const char* tip);
     void avatar(uint64_t user, uint64_t guild, ImVec2 at, float size, bool status = false);
 
     // Helpers.
@@ -179,6 +185,14 @@ private:
     float totalHeight_ = 0;
     uint64_t hovered_ = 0;  // message under the mouse
     uint64_t confirmDelete_ = 0;
+
+    // Who's typing where: channel → user → when it lapses (GetTickCount64).
+    std::unordered_map<uint64_t, std::map<uint64_t, unsigned long long>> typing_;
+    std::string typingLine(uint64_t channel);
+    // Our own typing: what the box held last frame, and when we last told
+    // Discord.
+    size_t draftHash_ = 0;
+    unsigned long long typingSent_ = 0;
 
     // Composer.
     std::vector<char> draft_ = std::vector<char>(8192, 0);

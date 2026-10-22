@@ -287,6 +287,19 @@ void App::onDispatch(const Dispatch& d) {
         if (gid == guild_ && subscribedChannel_ && (sync || !listFor_.count(subscribedChannel_)))
             listFor_[subscribedChannel_] = d.data.value("id", "");
     }
+    if (d.type == "TYPING_START") {
+        uint64_t c = ParseId(d.data["channel_id"]), u = ParseId(d.data["user_id"]);
+        if (auto mem = d.data.find("member"); mem != d.data.end() && mem->is_object() && d.data.contains("guild_id")) {
+            json m = *mem;
+            m["guild_id"] = d.data["guild_id"];
+            store_.Apply("GUILD_MEMBER_UPDATE", m);
+        }
+        if (u != store_.me) typing_[c][u] = GetTickCount64() + 10000;
+        return;
+    }
+    if (d.type == "MESSAGE_CREATE")
+        if (auto t = typing_.find(ParseId(d.data["channel_id"])); t != typing_.end())
+            t->second.erase(ParseId(d.data["author"]["id"]));
     auto effects = store_.Apply(d.type, d.data);
     if (d.type == "READY") {
         ready_ = true;
@@ -372,6 +385,7 @@ void App::open(uint64_t guild, uint64_t channel) {
         std::fill(draft_.begin(), draft_.end(), 0);
         if (auto it = drafts_.find(channel); it != drafts_.end())
             strncpy(draft_.data(), it->second.c_str(), draft_.size() - 1);
+        draftHash_ = std::hash<std::string>()(draft_.data());  // a restored draft isn't typing
         replyTo_ = editing_ = 0;
         files_.clear();
         composeError_.clear();
@@ -585,6 +599,7 @@ void App::send() {
         m.attachments.push_back(a);
     }
     store_.AddPending(m);
+    typingSent_ = 0;
     sendMessage(channel_, content, replyTo_, std::move(files), nonce);
     std::fill(draft_.begin(), draft_.end(), 0);
     drafts_.erase(channel_);
@@ -858,6 +873,28 @@ Resolver App::resolver(uint64_t guild) {
     r.channel = [this](uint64_t id) { return store_.channels.count(id) ? store_.ChannelName(id) : std::string("unknown"); };
     r.time = [this](int64_t t, char f) { return timestampSpan(t, f); };
     return r;
+}
+
+std::string App::typingLine(uint64_t channel) {
+    auto t = typing_.find(channel);
+    if (t == typing_.end()) return {};
+    unsigned long long now = GetTickCount64();
+    std::vector<std::string> names;
+    for (auto it = t->second.begin(); it != t->second.end();) {
+        if (it->second <= now) {
+            it = t->second.erase(it);
+            continue;
+        }
+        names.push_back(store_.DisplayName(guild_, it->first));
+        ++it;
+    }
+    switch (names.size()) {
+    case 0: return {};
+    case 1: return names[0] + " is typing…";
+    case 2: return names[0] + " and " + names[1] + " are typing…";
+    case 3: return names[0] + ", " + names[1] + " and " + names[2] + " are typing…";
+    default: return "Several people are typing…";
+    }
 }
 
 std::string App::channelTitle(uint64_t channel) const {

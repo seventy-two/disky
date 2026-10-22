@@ -1242,6 +1242,28 @@ void App::composer(float x, float y, float w, float* height) {
         focusComposer_ = true;  // Enter leaves the box; come straight back
     }
     used += boxH;
+
+    // Tell Discord we're typing, as its app does: on a change to the box,
+    // at most every nine seconds, not while editing.
+    size_t hash = std::hash<std::string>()(draft_.data());
+    if (hash != draftHash_) {
+        draftHash_ = hash;
+        unsigned long long now = GetTickCount64();
+        if (draft_[0] && !editing_ && draft_[0] != '/' && now - typingSent_ > 9000 && api_) {
+            typingSent_ = now;
+            Api* api = api_.get();
+            uint64_t ch = channel_;
+            sender_->Run([api, ch] { api->Call("POST", "/channels/" + IdString(ch) + "/typing"); });
+        }
+    }
+
+    // Who else is typing, in the strip under the box.
+    std::string typing = typingLine(channel_);
+    if (!typing.empty()) {
+        ImGui::PushFont(fonts_.regular, 12);
+        dl->AddText(ImVec2(boxX + 4 * scale_, top + used + 4 * scale_), U32(c.muted), typing.c_str());
+        ImGui::PopFont();
+    }
     *height = used + 24 * scale_;
 }
 

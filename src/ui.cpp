@@ -71,14 +71,29 @@ void App::Frame() {
         ImGui::SetCursorPos(ImVec2((w - sz.x) / 2, top + (h - sz.y) / 2));
         ImGui::TextDisabled("%s", text);
     } else {
-        float railW = 44 * scale_, sideW = 240 * scale_;
-        bool members = config_.members && channel_ &&
-                       (guild_ || (store_.channels.count(channel_) && store_.channels[channel_].type == chan::GroupDM));
-        float memW = members && w > 900 * scale_ ? 200 * scale_ : 0;
-        rail(0, top, h);
-        sidebar(railW, top, sideW - 1, h);
+        float strip = 14 * scale_;
+        float railW = config_.rail ? 44 * scale_ : strip, sideW = config_.channels ? 240 * scale_ : strip;
+        bool hasMembers = channel_ && (guild_ || (store_.channels.count(channel_) && store_.channels[channel_].type == chan::GroupDM));
+        float memW = !hasMembers || w <= 900 * scale_ ? 0 : config_.members ? 200 * scale_ : strip;
+        if (config_.rail)
+            rail(0, top, h);
+        else if (fold("unrail", 0, top, h, true)) {
+            config_.rail = true;
+            SaveConfig(config_);
+        }
+        if (config_.channels)
+            sidebar(railW, top, sideW - 1, h);
+        else if (fold("unside", railW, top, h, true)) {
+            config_.channels = true;
+            SaveConfig(config_);
+        }
         chat(railW + sideW, top, w - railW - sideW - memW, h);
-        if (memW > 0) memberList(w - memW + 1, top, memW - 1, h);
+        if (memW > 0 && config_.members)
+            memberList(w - memW + 1, top, memW - 1, h);
+        else if (memW > 0 && fold("unmembers", w - memW + 1, top, h, false)) {
+            config_.members = true;
+            SaveConfig(config_);
+        }
         // Lines between the columns, in the pixel left between them, so the
         // greys don't run together.
         ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -243,7 +258,8 @@ void App::rail(float x, float y, float h) {
     ImGui::SetCursorPos(ImVec2(x, y));
     ImGui::PushStyleColor(ImGuiCol_ChildBg, c.rail);
     ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 0);
-    ImGui::BeginChild("rail", ImVec2(w, h), 0);
+    float foot = 28 * scale_;  // under the list: the fold button
+    ImGui::BeginChild("rail", ImVec2(w, h - foot), 0);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     float icon = 28 * scale_, gap = 6 * scale_;
     float cy = 8 * scale_;
@@ -330,6 +346,13 @@ void App::rail(float x, float y, float h) {
     ImGui::EndChild();
     ImGui::PopStyleVar();
     ImGui::PopStyleColor();
+    ImVec2 o = ImGui::GetWindowPos();
+    float bs = 20 * scale_;
+    ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(o.x + x, o.y + y + h - foot), ImVec2(o.x + x + w, o.y + y + h), U32(c.rail));
+    if (foldButton("foldrail", ImVec2(o.x + x + (w - bs) / 2, o.y + y + h - foot + (foot - bs) / 2), false, "Hide the server list")) {
+        config_.rail = false;
+        SaveConfig(config_);
+    }
 }
 
 // --- sidebar ---
@@ -345,9 +368,15 @@ void App::sidebar(float x, float y, float w, float h) {
     std::string title = guild_ && store_.guilds.count(guild_) ? store_.guilds[guild_].name : "Direct messages";
     ImGui::PushFont(fonts_.semibold, kBody);
     Label(dl, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(o.x + 16 * scale_, o.y + (header - ImGui::GetFontSize()) / 2),
-          U32(c.heading), title, w - 32 * scale_, [this](const std::string& u) { return texture(u); });
+          U32(c.heading), title, w - 52 * scale_, [this](const std::string& u) { return texture(u); });
     ImGui::PopFont();
     dl->AddLine(ImVec2(o.x, o.y + header - 1), ImVec2(o.x + w, o.y + header - 1), U32(c.border), 1);
+    float bs = 20 * scale_;
+    if (foldButton("foldside", ImVec2(o.x + w - bs - 8 * scale_, o.y + (header - bs) / 2), false,
+                   guild_ ? "Hide the channel list" : "Hide the conversation list")) {
+        config_.channels = false;
+        SaveConfig(config_);
+    }
 
     ImGui::SetCursorPos(ImVec2(0, header));
     ImGui::BeginChild("list", ImVec2(w, h - header - panel), 0);
@@ -533,6 +562,44 @@ void App::avatar(uint64_t user, uint64_t guild, ImVec2 at, float size, bool stat
     dl->AddRectFilled(a, ImVec2(a.x + d - edge, a.y + d - edge), statusColour(s));
 }
 
+// --- folding columns ---
+
+bool App::foldButton(const char* id, ImVec2 at, bool pointsRight, const char* tip) {
+    const Palette& c = Colours();
+    float bs = 20 * scale_;
+    ImGui::SetCursorScreenPos(at);
+    bool clicked = ImGui::InvisibleButton(id, ImVec2(bs, bs));
+    bool hov = ImGui::IsItemHovered();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (hov) dl->AddRectFilled(at, ImVec2(at.x + bs, at.y + bs), U32(c.hover));
+    ImGui::PushFont(fonts_.regular, 10);
+    const char* g = pointsRight ? icon::Right : icon::Left;
+    ImVec2 sz = ImGui::CalcTextSize(g);
+    dl->AddText(ImVec2(at.x + (bs - sz.x) / 2, at.y + (bs - sz.y) / 2), U32(hov ? c.heading : c.muted), g);
+    ImGui::PopFont();
+    if (hov) ImGui::SetTooltip("%s", tip);
+    return clicked;
+}
+
+bool App::fold(const char* id, float x, float y, float h, bool pointsRight) {
+    const Palette& c = Colours();
+    float w = 14 * scale_;
+    ImVec2 o = ImGui::GetWindowPos();
+    ImVec2 a(o.x + x, o.y + y);
+    ImGui::SetCursorScreenPos(a);
+    bool clicked = ImGui::InvisibleButton(id, ImVec2(w, h));
+    bool hov = ImGui::IsItemHovered();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), U32(hov ? c.hover : c.rail));
+    ImGui::PushFont(fonts_.regular, 10);
+    const char* g = pointsRight ? icon::Right : icon::Left;
+    ImVec2 sz = ImGui::CalcTextSize(g);
+    dl->AddText(ImVec2(a.x + (w - sz.x) / 2, a.y + 16 * scale_), U32(hov ? c.heading : c.muted), g);
+    ImGui::PopFont();
+    if (hov) ImGui::SetTooltip("Show");
+    return clicked;
+}
+
 // --- member list ---
 
 void App::memberList(float x, float y, float w, float h) {
@@ -543,7 +610,15 @@ void App::memberList(float x, float y, float w, float h) {
     ImGui::BeginChild("members", ImVec2(w, h), 0);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     float row = 22 * scale_, head = 26 * scale_, av = 16 * scale_, side = 6 * scale_;
-    ImGui::Dummy(ImVec2(1, 6 * scale_));
+    {
+        ImVec2 o = ImGui::GetWindowPos();
+        float bs = 20 * scale_;
+        if (foldButton("foldmembers", ImVec2(o.x + side, o.y + 6 * scale_ - ImGui::GetScrollY()), true, "Hide the member list")) {
+            config_.members = false;
+            SaveConfig(config_);
+        }
+        ImGui::Dummy(ImVec2(1, bs + 6 * scale_));
+    }
 
     auto member = [&](uint64_t uid, const std::string& status) {
         ImGui::SetCursorPosX(side);

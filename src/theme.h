@@ -43,6 +43,8 @@ inline constexpr const char* Mute = "\xEE\x9D\x8F";  // U+E74F
 inline constexpr const char* Open = "\xEE\xA2\xA7";  // U+E8A7
 inline constexpr const char* Dismiss = "\xEE\x9C\x91";  // U+E711
 inline constexpr const char* Hash = "#";
+inline constexpr const char* Left = "\xEE\x9D\xAB";   // U+E76B ChevronLeft
+inline constexpr const char* Right = "\xEE\x9D\xAC";  // U+E76C ChevronRight
 }  // namespace icon
 
 bool SystemUsesDarkTheme();
