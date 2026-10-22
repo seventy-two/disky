@@ -41,7 +41,10 @@ ImU32 statusColour(const std::string& s) {
 
 }  // namespace
 
-bool App::Busy() const { return video_ && video_->Active() && !video_->Paused() && !video_->Ended(); }
+bool App::Busy() const {
+    auto playing = [](const std::unique_ptr<VideoPlayer>& v) { return v && v->Active() && !v->Paused() && !v->Ended(); };
+    return playing(video_) || playing(gif_) || (images_ && images_->Animating());
+}
 
 bool App::InCaption(float x, float y) const {
     if (y >= captionH_) return false;
@@ -52,6 +55,8 @@ bool App::InCaption(float x, float y) const {
 
 void App::Frame() {
     now_ = ImGui::GetTime();
+    images_->Tick();
+    gifWanted_ = false;
     const Palette& c = Colours();
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->Pos);
@@ -105,6 +110,8 @@ void App::Frame() {
         settings();
     }
     ImGui::End();
+    // A GIF stops once the mouse leaves it, even if it's gone off screen.
+    if (!gifWanted_ && gif_->Active() && !gif_->Paused()) gif_->TogglePause();
 }
 
 // --- title bar ---

@@ -7,6 +7,7 @@
 #include <cmath>
 
 #include "app.h"
+#include "gif.h"
 
 namespace disky {
 
@@ -435,7 +436,9 @@ void App::message(const Message& m, bool groupStart, bool alt, float w, float h)
     if (!m.content.empty()) {
         const Layout& l = layoutFor(m, contentW);
         auto& revealed = revealed_[m.id];
-        Hit hit = Draw(l, ImVec2(o.x + left, y), [this](const std::string& url) { return texture(url); }, revealed);
+        // Animated emoji play while the message is hovered, as in Discord.
+        Hit hit = Draw(l, ImVec2(o.x + left, y), [this, hov](const std::string& url) { return image(url, hov && IsGifUrl(url)); },
+                       revealed);
         if (m.edited && !l.pieces.empty()) {
             const Piece& last = l.pieces.back();
             ImGui::PushFont(fonts_.regular, 11);
@@ -469,14 +472,16 @@ void App::message(const Message& m, bool groupStart, bool alt, float w, float h)
         // Lottie stickers are vector animations: just the name for those.
         float sz = stickerSize * scale_;
         ImVec2 sa(o.x + left, y + 2 * scale_);
+        bool overSticker = hov && ImGui::IsMouseHoveringRect(sa, ImVec2(sa.x + sz, sa.y + sz));
         ImTextureID t = st.format == 3 ? ImTextureID(0)
-                                       : texture("https://media.discordapp.net/stickers/" + IdString(st.id) +
-                                                 (st.format == 4 ? ".gif" : ".png") + "?size=160");
+                                       : image("https://media.discordapp.net/stickers/" + IdString(st.id) +
+                                                   (st.format == 4 ? ".gif" : ".png") + "?size=160",
+                                               overSticker && st.format == 4);
         if (t)
             dl->AddImage(ImTextureRef(t), sa, ImVec2(sa.x + sz, sa.y + sz));
         else
             dl->AddText(ImVec2(sa.x, sa.y), U32(c.muted), ("Sticker: " + st.name).c_str());
-        if (ImGui::IsMouseHoveringRect(sa, ImVec2(sa.x + sz, sa.y + sz)) && hov) ImGui::SetTooltip("%s", st.name.c_str());
+        if (overSticker) ImGui::SetTooltip("%s", st.name.c_str());
         y += sz + 4 * scale_;
     }
     reactions(m, o.x + left, y, contentW);
@@ -631,7 +636,8 @@ void App::attachments(const Message& m, float x, float y, float w) {
             int pw = int(size.x), ph = int(size.y);
             std::string dims = "width=" + std::to_string(pw) + "&height=" + std::to_string(ph);
             std::string still = base.empty() ? "" : a.IsVideo() ? withParams(base, "format=jpeg&" + dims) : withParams(base, dims);
-            media("a" + IdString(a.id), still, a.IsVideo() ? a.url : "", a.url, ImVec2(x, y + 2 * scale_), size, a.spoiler, false);
+            bool gif = a.contentType == "image/gif" || IsGifUrl(a.filename);
+            media("a" + IdString(a.id), still, a.IsVideo() ? a.url : "", a.url, ImVec2(x, y + 2 * scale_), size, a.spoiler, gif);
             y += size.y + 4 * scale_;
         } else {
             float bw = std::min(w, 400 * scale_), bh = 52 * scale_;
@@ -665,18 +671,29 @@ void App::media(const std::string& key, const std::string& still, const std::str
     const Palette& c = Colours();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     ImVec2 end(at.x + size.x, at.y + size.y);
-    bool playing = !play.empty() && video_->Url() == play;
+    bool gifVideo = gif && !play.empty();
+    bool playing = !gifVideo && !play.empty() && video_->Url() == play;
     ImGui::SetCursorScreenPos(at);
     ImGui::PushID(key.c_str());
     bool clicked = ImGui::InvisibleButton("media", size);
     bool hov = ImGui::IsItemHovered();
     ImGui::PopID();
     bool hidden = spoiler && !revealedMedia_.count(key);
-    float r = 6 * scale_;
-    ID3D11ShaderResourceView* frame = playing ? video_->Frame() : nullptr;
+    // GIFs play only while the mouse is over them.
+    bool animate = gif && hov && !hidden;
+    if (animate && gifVideo) {
+        gifWanted_ = true;
+        if (gif_->Url() != play)
+            gif_->Play(play, 0, true);
+        else if (gif_->Paused())
+            gif_->TogglePause();
+    }
+    ID3D11ShaderResourceView* frame = playing                                        ? video_->Frame()
+                                      : gifVideo && !hidden && gif_->Url() == play ? gif_->Frame()
+                                                                                   : nullptr;
     if (frame) {
         dl->AddImage(ImTextureRef(ImTextureID((intptr_t)frame)), at, end, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE);
-    } else if (ImTextureID t = still.empty() ? ImTextureID(0) : texture(still)) {
+    } else if (ImTextureID t = still.empty() ? ImTextureID(0) : image(still, animate && !gifVideo)) {
         dl->AddImage(ImTextureRef(t), at, end, ImVec2(0, 0), ImVec2(1, 1), hidden ? IM_COL32(40, 40, 40, 255) : IM_COL32_WHITE);
     } else {
         dl->AddRectFilled(at, end, U32(c.code));
@@ -691,6 +708,22 @@ void App::media(const std::string& key, const std::string& still, const std::str
         ImGui::PopFont();
         if (hov) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
         if (clicked) revealedMedia_.insert(key);
+        return;
+    }
+    if (gif) {
+        // A GIF badge in the corner while it's still, as Discord has.
+        if (!hov) {
+            ImGui::PushFont(fonts_.bold, 11);
+            ImVec2 sz = ImGui::CalcTextSize("GIF");
+            ImVec2 p(at.x + 6 * scale_, at.y + 6 * scale_);
+            dl->AddRectFilled(p, ImVec2(p.x + sz.x + 8 * scale_, p.y + sz.y + 4 * scale_), IM_COL32(0, 0, 0, 170));
+            dl->AddText(ImVec2(p.x + 4 * scale_, p.y + 2 * scale_), IM_COL32_WHITE, "GIF");
+            ImGui::PopFont();
+        }
+        if (!link.empty()) {
+            if (hov) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            if (clicked) OpenURL(link);
+        }
         return;
     }
     if (playing) {
@@ -750,7 +783,7 @@ void App::media(const std::string& key, const std::string& still, const std::str
         return;
     }
     if (!play.empty() || !link.empty()) {
-        if (!play.empty() || gif) {
+        if (!play.empty()) {
             float pr = 24 * scale_;
             ImVec2 mid((at.x + end.x) / 2, (at.y + end.y) / 2);
             dl->AddCircleFilled(mid, pr, IM_COL32(0, 0, 0, hov ? 220 : 160));
@@ -762,7 +795,7 @@ void App::media(const std::string& key, const std::string& still, const std::str
         if (hov) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
         if (clicked) {
             if (!play.empty())
-                video_->Play(play, config_.volume, gif);
+                video_->Play(play, config_.volume);
             else
                 OpenURL(link);
         }
@@ -801,7 +834,7 @@ void App::embed(const Message& m, const Embed& e, float x, float y, float w) {
         ImVec2 size = fit(float(md.width), float(md.height), std::min(w, 400 * scale_), 300 * scale_);
         std::string still = md.proxyUrl.empty() ? md.url : md.proxyUrl;
         std::string play = e.type == "gifv" ? (e.video.proxyUrl.empty() ? e.video.url : e.video.proxyUrl) : "";
-        media(key, still, play, e.url, ImVec2(x, y), size, false, e.type == "gifv");
+        media(key, still, play, e.url, ImVec2(x, y), size, false, e.type == "gifv" || IsGifUrl(still));
         return;
     }
     float bw = std::min(w, 432 * scale_), pad = 12 * scale_, h = embedHeight(e, w);
@@ -912,10 +945,11 @@ void App::reactions(const Message& m, float x, float y, float w) {
         ImGui::PopID();
         dl->AddRectFilled(a, b, r.me ? U32(c.accent, 0.25f) : U32(c.code));
         dl->AddRect(a, b, r.me ? U32(c.accent) : (hov ? U32(c.muted) : U32(c.code)));
-        std::string url = r.emoji.id ? "https://cdn.discordapp.com/emojis/" + IdString(r.emoji.id) + ".png?size=48"
+        std::string url = r.emoji.id ? "https://cdn.discordapp.com/emojis/" + IdString(r.emoji.id) +
+                                           (r.emoji.animated ? ".gif" : ".png") + "?size=48"
                                      : "https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/72x72/" + TwemojiName(r.emoji.name) + ".png";
         ImVec2 ia(a.x + 6 * scale_, a.y + (ph - img) / 2);
-        if (ImTextureID t = texture(url))
+        if (ImTextureID t = image(url, r.emoji.animated && hovered_ == m.id))
             dl->AddImage(ImTextureRef(t), ia, ImVec2(ia.x + img, ia.y + img));
         dl->AddText(ImVec2(ia.x + img + 5 * scale_, a.y + (ph - ImGui::GetFontSize()) / 2), r.me ? U32(c.heading) : U32(c.muted), n.c_str());
         if (hov) {

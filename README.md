@@ -33,8 +33,11 @@ result is a single `disky.exe` with nothing to install.
   pasting an image.
 - Hover a message to react, reply, edit or delete (Shift+click the bin to
   skip the question); right-click for the same and to copy.
-- Click a video or GIF to play it inline; click again to pause, use the bar
+- Click a video to play it inline; click again to pause, use the bar
   to seek, and the mouse wheel over it for volume.
+- **GIFs** play while the mouse is over them (uploads, Tenor and Giphy links,
+  GIF stickers); animated emoji play while you're over their message.
+  Clicking a GIF opens it in your browser.
 - **Notifications** come for mentions of you or your roles, @everyone where
   your Discord settings allow, and DMs, unless you're already looking at
   that channel. Discord's own mutes apply. Closing the window keeps disky
@@ -43,11 +46,11 @@ result is a single `disky.exe` with nothing to install.
 ## Building
 
 `build.bat` builds `build\disky.exe` with Visual Studio 2022's C++ tools
-and runs the tests. The portable parts (the store and the markdown parser)
+and runs the tests. The portable parts (the store, the markdown parser and GIF frames)
 also build on Linux:
 
 ```sh
-g++ -std=c++17 -I src -I third_party tests/tests.cpp src/store.cpp src/markdown.cpp -o tests && ./tests
+g++ -std=c++17 -I src -I third_party tests/tests.cpp src/store.cpp src/markdown.cpp src/gif.cpp -o tests && ./tests
 ```
 
 `tools/genemoji.py` regenerates `src/emoji_data.inc` (the picker's emoji and

@@ -20,8 +20,10 @@ std::string twemoji(const std::string& file) {
     return "https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/72x72/" + file + ".png";
 }
 
-std::string customEmoji(uint64_t id) {
-    return "https://cdn.discordapp.com/emojis/" + std::to_string(id) + ".png?size=48";
+// customEmoji is a custom emoji's image; animated ones are GIFs, which
+// show their first frame until they're played.
+std::string customEmoji(uint64_t id, bool animated) {
+    return "https://cdn.discordapp.com/emojis/" + std::to_string(id) + (animated ? ".gif" : ".png") + "?size=48";
 }
 
 class Builder {
@@ -238,7 +240,7 @@ private:
         switch (sp.kind) {
         case Span::Kind::Text: text(sp.text, sp, index, col); break;
         case Span::Kind::Emoji: image(twemoji(sp.file), sp.text, sp); break;
-        case Span::Kind::CustomEmoji: image(customEmoji(sp.id), ":" + sp.text + ":", sp); break;
+        case Span::Kind::CustomEmoji: image(customEmoji(sp.id, sp.animated), ":" + sp.text + ":", sp); break;
         case Span::Kind::UserMention:
             text("@" + names_.user(sp.id), sp, index, U32(ImVec4(0.79f, 0.80f, 0.98f, 1)), true);
             break;

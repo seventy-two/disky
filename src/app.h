@@ -96,6 +96,8 @@ private:
     void attachments(const Message& m, float x, float y, float w);
     float embedHeight(const Embed& e, float w);
     void embed(const Message& m, const Embed& e, float x, float y, float w);
+    // media draws an image or video. A GIF (gif set: a video in play, or
+    // else still is a .gif) plays while hovered and opens link when clicked.
     void media(const std::string& key, const std::string& still, const std::string& play, const std::string& link,
                ImVec2 at, ImVec2 size, bool spoiler, bool gif);
     float reactionsHeight(const Message& m, float w);
@@ -124,6 +126,8 @@ private:
     std::string timestampSpan(int64_t seconds, char format) const;
     ImU32 userColour(uint64_t guild, uint64_t user) const;
     ImTextureID texture(const std::string& url);
+    // image is texture, but with play an animated GIF animates.
+    ImTextureID image(const std::string& url, bool play);
     Resolver resolver(uint64_t guild);
     std::string channelTitle(uint64_t channel) const;
     bool canSend(uint64_t channel) const;
@@ -149,6 +153,10 @@ private:
     std::unique_ptr<Worker> sender_, fetcher_;  // sends keep their order; fetches don't wait on them
     std::unique_ptr<ImageCache> images_;
     std::unique_ptr<VideoPlayer> video_;
+    // gif_ plays GIFs sent as video (Tenor, Giphy) while they're hovered;
+    // gifWanted_ says one was this frame.
+    std::unique_ptr<VideoPlayer> gif_;
+    bool gifWanted_ = false;
     Store store_;
     bool ready_ = false;
     std::string status_;  // connection trouble, for the title bar

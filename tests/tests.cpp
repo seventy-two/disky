@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <string>
 
+#include "../src/gif.h"
 #include "../src/markdown.h"
 #include "../src/store.h"
 
@@ -378,6 +379,56 @@ static void testEmoji() {
     CHECK(EmojiByChar("\xE2\x9D\xA4\xEF\xB8\x8F") == heart);
 }
 
+// px is a w x h patch of one colour; alpha 0 makes it transparent.
+static std::vector<unsigned char> px(int w, int h, unsigned char r, unsigned char a = 255) {
+    std::vector<unsigned char> v;
+    for (int i = 0; i < w * h; i++) v.insert(v.end(), {r, 0, 0, a});
+    return v;
+}
+
+static void testGif() {
+    // Pixel (x, y)'s red on a 2x2 canvas.
+    auto red = [](const GifCanvas& c, int x, int y) { return int(c.Pixels()[(y * 2 + x) * 4]); };
+    auto alpha = [](const GifCanvas& c, int x, int y) { return int(c.Pixels()[(y * 2 + x) * 4 + 3]); };
+
+    GifCanvas c(2, 2);
+    c.Paint({0, 0, 2, 2, 100, 1, px(2, 2, 10)});
+    CHECK_EQ(red(c, 1, 1), 10);
+    // A patch in one corner, with transparency: the rest shows through.
+    auto patch = px(1, 1, 20);
+    c.Paint({1, 1, 1, 1, 100, 2, patch});
+    CHECK_EQ(red(c, 0, 0), 10);
+    CHECK_EQ(red(c, 1, 1), 20);
+    // Disposal 2 cleared that corner before the next frame.
+    c.Paint({0, 0, 1, 1, 100, 3, px(1, 1, 30, 0)});
+    CHECK_EQ(alpha(c, 1, 1), 0);
+    CHECK_EQ(red(c, 0, 0), 10);
+    // Disposal 3: this frame is undone before the next.
+    c.Paint({0, 0, 1, 1, 100, 3, px(1, 1, 40)});
+    CHECK_EQ(red(c, 0, 0), 40);
+    c.Paint({1, 0, 1, 1, 100, 1, px(1, 1, 50)});
+    CHECK_EQ(red(c, 0, 0), 10);
+    CHECK_EQ(red(c, 1, 0), 50);
+    // Patches running off the canvas are cut short, not written past it.
+    c.Paint({1, 1, 3, 3, 100, 1, px(3, 3, 60)});
+    CHECK_EQ(red(c, 1, 1), 60);
+    CHECK_EQ(c.Pixels().size(), size_t(16));
+
+    CHECK_EQ(GifDelayMs(0), 100);
+    CHECK_EQ(GifDelayMs(1), 100);
+    CHECK_EQ(GifDelayMs(4), 40);
+    CHECK_EQ(GifFrameAt({100, 50, 100}, 0), 0);
+    CHECK_EQ(GifFrameAt({100, 50, 100}, 120), 1);
+    CHECK_EQ(GifFrameAt({100, 50, 100}, 200), 2);
+    CHECK_EQ(GifFrameAt({100, 50, 100}, 260), 0);  // looped
+    CHECK_EQ(GifFrameAt({100}, 500), 0);
+
+    CHECK(IsGifUrl("https://media.discordapp.net/attachments/1/2/cat.GIF?width=400&height=300"));
+    CHECK(IsGifUrl("https://cdn.discordapp.com/emojis/1.gif?size=48"));
+    CHECK(!IsGifUrl("https://cdn.discordapp.com/emojis/1.png?size=48&x=.gif"));
+    CHECK(!IsGifUrl("gif"));
+}
+
 int main() {
     testTime();
     testBase64AndProto();
@@ -388,6 +439,7 @@ int main() {
     testMemberList();
     testMarkdown();
     testEmoji();
+    testGif();
     if (failures) {
         std::printf("%d failure(s)\n", failures);
         return 1;

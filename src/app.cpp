@@ -105,6 +105,7 @@ App::App(HWND hwnd, ID3D11Device* device, std::function<void()> wake,
     fonts_ = LoadFonts();
     images_ = std::make_unique<ImageCache>(device_, wake_);
     video_ = std::make_unique<VideoPlayer>(device_, wake_);
+    gif_ = std::make_unique<VideoPlayer>(device_, wake_);
     sender_ = std::make_unique<Worker>();
     fetcher_ = std::make_unique<Worker>();
     gateway_ = std::make_unique<Gateway>(wake_);
@@ -200,6 +201,7 @@ void App::signOut() {
     generation_++;
     gateway_->Stop();
     video_->Stop();
+    gif_->Stop();
     api_.reset();
     config_.token.clear();
     SaveConfig(config_);
@@ -402,6 +404,7 @@ void App::open(uint64_t guild, uint64_t channel) {
         atBottom_ = true;
         firstShown_ = 0;
         video_->Stop();
+        gif_->Stop();
         focusComposer_ = true;
     }
     if (!channel) return;
@@ -791,6 +794,13 @@ ImU32 App::userColour(uint64_t guild, uint64_t user) const {
 ImTextureID App::texture(const std::string& url) {
     const Texture* t = images_->Get(url);
     return t ? ImTextureID((intptr_t)t->srv) : ImTextureID(0);
+}
+
+ImTextureID App::image(const std::string& url, bool play) {
+    if (play)
+        if (const Texture* t = images_->Animated(url, now_)) return ImTextureID((intptr_t)t->srv);
+    // The still while it loads, or when it's not playing.
+    return texture(url);
 }
 
 namespace {
