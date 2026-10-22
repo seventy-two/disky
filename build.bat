@@ -14,7 +14,7 @@ call "%VS%\VC\Auxiliary\Build\vcvars64.bat" >nul || exit /b 1
 
 if not exist build\obj mkdir build\obj
 if not exist build\tests mkdir build\tests
-set CFLAGS=/nologo /std:c++17 /O2 /EHsc /utf-8 /W3 /MP /DUNICODE /D_UNICODE /DNOMINMAX /DWIN32_LEAN_AND_MEAN /D_CRT_SECURE_NO_WARNINGS /DIMGUI_DISABLE_DEMO_WINDOWS /Isrc /Ithird_party /Ithird_party\imgui /Ithird_party\imgui\backends
+set CFLAGS=/nologo /std:c++17 /O2 /EHsc /utf-8 /W3 /MP /DUNICODE /D_UNICODE /DNOMINMAX /DWIN32_LEAN_AND_MEAN /D_CRT_SECURE_NO_WARNINGS /DIMGUI_DISABLE_DEMO_WINDOWS /DIMGUI_USE_WCHAR32 /Isrc /Ithird_party /Ithird_party\imgui /Ithird_party\imgui\backends
 
 echo Building tests...
 cl %CFLAGS% /Fobuild\tests\ /Fe:build\tests.exe tests\tests.cpp src\store.cpp src\markdown.cpp src\gif.cpp > build\tests.log 2>&1 || (type build\tests.log & exit /b 1)

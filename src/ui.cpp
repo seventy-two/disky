@@ -78,36 +78,21 @@ void App::Frame() {
         ImGui::SetCursorPos(ImVec2((w - sz.x) / 2, top + (h - sz.y) / 2));
         ImGui::TextDisabled("%s", text);
     } else {
-        float strip = 14 * scale_;
-        float railW = config_.rail ? 44 * scale_ : strip, sideW = config_.channels ? 240 * scale_ : strip;
+        // The columns either side are shown or hidden from the title bar.
+        float sideW = config_.channels ? 240 * scale_ : 0;
         bool hasMembers = channel_ && (guild_ || (store_.channels.count(channel_) && store_.channels[channel_].type == chan::GroupDM));
-        float memW = !hasMembers || w <= 900 * scale_ ? 0 : config_.members ? 200 * scale_ : strip;
-        if (config_.rail)
-            rail(0, top, h);
-        else if (fold("unrail", 0, top, h, true)) {
-            config_.rail = true;
-            SaveConfig(config_);
-        }
-        if (config_.channels)
-            sidebar(railW, top, sideW - 1, h);
-        else if (fold("unside", railW, top, h, true)) {
-            config_.channels = true;
-            SaveConfig(config_);
-        }
-        chat(railW + sideW, top, w - railW - sideW - memW, h);
-        if (memW > 0 && config_.members)
-            memberList(w - memW + 1, top, memW - 1, h);
-        else if (memW > 0 && fold("unmembers", w - memW + 1, top, h, false)) {
-            config_.members = true;
-            SaveConfig(config_);
-        }
+        float memW = hasMembers && config_.members && w > 900 * scale_ ? 200 * scale_ : 0;
+        if (sideW > 0) sidebar(0, top, sideW - 1, h);
+        chat(sideW, top, w - sideW - memW, h);
+        if (memW > 0) memberList(w - memW + 1, top, memW - 1, h);
         // Lines between the columns, in the pixel left between them, so the
         // greys don't run together.
         ImDrawList* dl = ImGui::GetWindowDrawList();
         ImVec2 o = ImGui::GetWindowPos();
-        dl->AddRectFilled(ImVec2(o.x + railW + sideW - 1, o.y + top), ImVec2(o.x + railW + sideW, o.y + top + h), U32(c.border));
+        if (sideW > 0) dl->AddRectFilled(ImVec2(o.x + sideW - 1, o.y + top), ImVec2(o.x + sideW, o.y + top + h), U32(c.border));
         if (memW > 0)
             dl->AddRectFilled(ImVec2(o.x + w - memW, o.y + top), ImVec2(o.x + w - memW + 1, o.y + top + h), U32(c.border));
+        serverMenu();
         emojiPicker();
         settings();
     }
@@ -128,13 +113,29 @@ void App::titleBar() {
     dl->AddRectFilled(o, ImVec2(o.x + w, o.y + captionH_), U32(c.rail));
     ImGui::PushFont(fonts_.semibold, kSmall);
     float ty = (captionH_ - ImGui::GetFontSize()) / 2;
-    dl->AddText(ImVec2(o.x + 12 * scale_, o.y + ty), U32(c.muted), "disky");
-    float left = 12 * scale_ + ImGui::CalcTextSize("disky").x;
     ImGui::PopFont();
+    noDrag_.clear();
+
+    // On the left: which server (a menu of them), and the channel list.
+    float left;
+    if (ready_) {
+        left = serversButton(o);
+        if (barToggle("channels", icon::List, ImVec2(o.x + left, o.y), config_.channels,
+                      config_.channels ? (guild_ ? "Hide the channel list" : "Hide the conversation list")
+                                       : (guild_ ? "Show the channel list" : "Show the conversation list"))) {
+            config_.channels = !config_.channels;
+            SaveConfig(config_);
+        }
+        left += 36 * scale_;
+    } else {
+        ImGui::PushFont(fonts_.semibold, kSmall);
+        dl->AddText(ImVec2(o.x + 12 * scale_, o.y + ty), U32(c.muted), "disky");
+        left = 12 * scale_ + ImGui::CalcTextSize("disky").x;
+        ImGui::PopFont();
+    }
 
     // Window buttons, the size Windows draws them, with the bell and the
     // member list button beside them.
-    noDrag_.clear();
     float bw = 46 * scale_, right = bw * 3;
     if (ready_) {
         right += bw;
@@ -142,21 +143,8 @@ void App::titleBar() {
         auto ch = store_.channels.find(channel_);
         if (ch != store_.channels.end() && (guild_ || ch->second.type == chan::GroupDM)) {
             right += 36 * scale_;
-            ImVec2 a(o.x + w - right, o.y);
-            noDrag_.push_back(ImRect(ImVec2(a.x - o.x, 0), ImVec2(a.x - o.x + 36 * scale_, captionH_)));
-            ImGui::SetCursorScreenPos(a);
-            bool pressed = ImGui::InvisibleButton("members", ImVec2(36 * scale_, captionH_));
-            bool hov = ImGui::IsItemHovered();
-            if (hov) {
-                dl->AddRectFilled(a, ImVec2(a.x + 36 * scale_, a.y + captionH_), U32(c.hover));
-                ImGui::SetTooltip(config_.members ? "Hide the member list" : "Show the member list");
-            }
-            ImGui::PushFont(fonts_.regular, 14);
-            ImVec2 sz = ImGui::CalcTextSize(icon::People);
-            dl->AddText(ImVec2(a.x + (36 * scale_ - sz.x) / 2, a.y + (captionH_ - sz.y) / 2),
-                        U32(hov || config_.members ? c.heading : c.muted), icon::People);
-            ImGui::PopFont();
-            if (pressed) {
+            if (barToggle("members", icon::People, ImVec2(o.x + w - right, o.y), config_.members,
+                          config_.members ? "Hide the member list" : "Show the member list")) {
                 config_.members = !config_.members;
                 SaveConfig(config_);
             }
@@ -443,134 +431,175 @@ void App::login() {
 
 // --- rail ---
 
-void App::rail(float x, float y, float h) {
+// guildIcon draws a server's icon (its initials if it has none), or for
+// guild 0 the direct messages icon.
+void App::guildIcon(ImDrawList* dl, uint64_t gid, ImVec2 a, float size) {
     const Palette& c = Colours();
-    float w = 44 * scale_;
-    ImGui::SetCursorPos(ImVec2(x, y));
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, c.rail);
-    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 0);
-    float foot = 28 * scale_;  // under the list: the fold button
-    ImGui::BeginChild("rail", ImVec2(w, h - foot), 0);
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    float icon = 28 * scale_, gap = 6 * scale_;
-    float cy = 8 * scale_;
-
-    // item draws one rail entry; it returns whether it was clicked.
-    auto item = [&](const char* id, bool selected, bool unread, int mentions, const std::string& tip,
-                    const std::function<void(ImVec2, ImVec2, float)>& face) {
-        ImGui::SetCursorPos(ImVec2((w - icon) / 2, cy));
-        ImVec2 a = ImGui::GetCursorScreenPos(), b(a.x + icon, a.y + icon);
-        bool clicked = ImGui::InvisibleButton(id, ImVec2(icon, icon));
-        bool hov = ImGui::IsItemHovered();
-        face(a, b, 0);
-        if (hov && !selected) dl->AddRectFilled(a, b, IM_COL32(255, 255, 255, 24));
-        // The pill on the left: tall when selected, short when hovered, a
-        // dot when unread.
-        float ph = selected ? icon : hov ? icon / 2 : unread ? 6 * scale_ : 0;
-        if (ph > 0) {
-            float px = ImGui::GetWindowPos().x;
-            float my = (a.y + b.y) / 2;
-            dl->AddRectFilled(ImVec2(px, my - ph / 2), ImVec2(px + 3 * scale_, my + ph / 2), selected ? U32(c.accent) : U32(c.heading));
-        }
-        if (mentions > 0) {
-            std::string n = mentions > 99 ? "99+" : std::to_string(mentions);
-            ImGui::PushFont(fonts_.bold, 9);
-            ImVec2 sz = ImGui::CalcTextSize(n.c_str());
-            float bw = std::max(sz.x + 4 * scale_, 11 * scale_), bh = 11 * scale_;
-            ImVec2 ba(b.x - bw + 3 * scale_, b.y - bh + 3 * scale_);
-            dl->AddRectFilled(ImVec2(ba.x - 1 * scale_, ba.y - 1 * scale_), ImVec2(ba.x + bw + 1 * scale_, ba.y + bh + 1 * scale_),
-                              U32(c.rail));
-            dl->AddRectFilled(ba, ImVec2(ba.x + bw, ba.y + bh), U32(c.dnd));
-            dl->AddText(ImVec2(ba.x + (bw - sz.x) / 2, ba.y + (bh - sz.y) / 2), IM_COL32_WHITE, n.c_str());
-            ImGui::PopFont();
-        }
-        if (hov && !tip.empty()) ImGui::SetTooltip("%s", tip.c_str());
-        cy += icon + gap;
-        return clicked;
-    };
-
-    int dmMentions = 0;
-    bool dmUnread = false;
-    for (uint64_t ch : store_.PrivateChannels()) {
-        dmMentions += store_.Mentions(ch);
-        dmUnread |= store_.Unread(ch) && !store_.ChannelMuted(ch);
+    ImVec2 b(a.x + size, a.y + size);
+    if (!gid) {
+        dl->AddRectFilled(a, b, U32(c.accent));
+        ImGui::PushFont(fonts_.regular, size * 0.5f / scale_);
+        ImVec2 sz = ImGui::CalcTextSize(icon::Chat);
+        dl->AddText(ImVec2(a.x + (size - sz.x) / 2, a.y + (size - sz.y) / 2), IM_COL32_WHITE, icon::Chat);
+        ImGui::PopFont();
+        return;
     }
-    if (item("home", guild_ == 0, false, dmMentions, "Direct messages", [&](ImVec2 a, ImVec2 b, float r) {
-            dl->AddRectFilled(a, b, guild_ == 0 ? U32(c.accent) : U32(c.bg));
-            ImGui::PushFont(fonts_.regular, 14);
-            ImVec2 sz = ImGui::CalcTextSize(icon::Chat);
-            dl->AddText(ImVec2(a.x + (icon - sz.x) / 2, a.y + (icon - sz.y) / 2), guild_ == 0 ? IM_COL32_WHITE : U32(c.text),
-                        icon::Chat);
-            ImGui::PopFont();
-        }))
-        open(0, 0);
-    (void)dmUnread;
-    dl->AddRectFilled(ImVec2(ImGui::GetWindowPos().x + w / 2 - 10 * scale_, ImGui::GetWindowPos().y + cy - gap / 2 - 1),
-                      ImVec2(ImGui::GetWindowPos().x + w / 2 + 10 * scale_, ImGui::GetWindowPos().y + cy - gap / 2 + 1),
-                      U32(c.border));
-    cy += gap / 2;
+    const Guild& g = store_.guilds[gid];
+    ImTextureID t = g.icon.empty() ? ImTextureID(0)
+                                   : texture("https://cdn.discordapp.com/icons/" + IdString(gid) + "/" + g.icon + ".png?size=96");
+    if (t) {
+        dl->AddImage(ImTextureRef(t), a, b, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE);
+        return;
+    }
+    dl->AddRectFilled(a, b, U32(c.bg));
+    std::string ini = initials(g.name);
+    ImGui::PushFont(fonts_.semibold, (ini.size() > 3 ? 0.29f : 0.36f) * size / scale_);
+    ImVec2 sz = ImGui::CalcTextSize(ini.c_str());
+    dl->AddText(ImVec2(a.x + (size - sz.x) / 2, a.y + (size - sz.y) / 2), U32(c.text), ini.c_str());
+    ImGui::PopFont();
+}
 
+// mentionBadge draws a red count pill ending at right, centred on y; it
+// returns its width.
+float App::mentionBadge(ImDrawList* dl, int n, float right, float y) {
+    std::string t = n > 99 ? "99+" : std::to_string(n);
+    ImGui::PushFont(fonts_.bold, 10);
+    ImVec2 sz = ImGui::CalcTextSize(t.c_str());
+    float bw = std::max(sz.x + 8 * scale_, 16 * scale_), bh = 15 * scale_;
+    ImVec2 a(right - bw, y - bh / 2);
+    dl->AddRectFilled(a, ImVec2(right, a.y + bh), U32(Colours().dnd), bh / 2);
+    dl->AddText(ImVec2(a.x + (bw - sz.x) / 2, a.y + (bh - sz.y) / 2), IM_COL32_WHITE, t.c_str());
+    ImGui::PopFont();
+    return bw;
+}
+
+float App::serversButton(ImVec2 a) {
+    const Palette& c = Colours();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 o = ImGui::GetWindowPos();
+    float h = captionH_, ic = 18 * scale_, pad = 8 * scale_;
+    std::string name = guild_ && store_.guilds.count(guild_) ? store_.guilds[guild_].name : "Direct messages";
+    ImageFor images = [this](const std::string& u) { return texture(u); };
+    ImGui::PushFont(fonts_.semibold, kSmall);
+    float nameW = std::min(Label(nullptr, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(0, 0), 0, name, 0, images), 200 * scale_);
+    ImGui::PopFont();
+    // Mentions in servers other than this one, so they're not missed.
+    int elsewhere = 0;
+    for (uint64_t gid : store_.GuildsInOrder())
+        if (gid != guild_) elsewhere += store_.GuildMentions(gid);
+    if (guild_)
+        for (uint64_t ch : store_.PrivateChannels()) elsewhere += store_.Mentions(ch);
+    float w = pad + ic + 8 * scale_ + nameW + 8 * scale_ + 10 * scale_ + pad + (elsewhere ? 24 * scale_ : 0);
+    noDrag_.push_back(ImRect(ImVec2(a.x - o.x, 0), ImVec2(a.x - o.x + w, h)));
+    ImGui::SetCursorScreenPos(a);
+    bool pressed = ImGui::InvisibleButton("servers", ImVec2(w, h));
+    bool hov = ImGui::IsItemHovered();
+    if (hov || ImGui::IsPopupOpen("servermenu")) dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), U32(c.hover));
+    guildIcon(dl, guild_, ImVec2(a.x + pad, a.y + (h - ic) / 2), ic);
+    float tx = a.x + pad + ic + 8 * scale_;
+    ImGui::PushFont(fonts_.semibold, kSmall);
+    Label(dl, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(tx, a.y + (h - ImGui::GetFontSize()) / 2), U32(c.heading), name, nameW,
+          images);
+    ImGui::PopFont();
+    ImGui::PushFont(fonts_.regular, 8);
+    ImVec2 cs = ImGui::CalcTextSize(icon::Down);
+    dl->AddText(ImVec2(tx + nameW + 8 * scale_, a.y + (h - cs.y) / 2), U32(c.muted), icon::Down);
+    ImGui::PopFont();
+    if (elsewhere) mentionBadge(dl, elsewhere, a.x + w - pad, a.y + h / 2);
+    if (hov) ImGui::SetTooltip("Servers");
+    if (pressed) {
+        serversAt_ = ImVec2(a.x, a.y + h);
+        ImGui::OpenPopup("servermenu");
+    }
+    return w;
+}
+
+void App::serverMenu() {
+    const Palette& c = Colours();
+    float mw = 280 * scale_, row = 36 * scale_, ic = 24 * scale_, pad = 10 * scale_;
+    ImVec2 vp = ImGui::GetMainViewport()->Size;
+    ImGui::SetNextWindowPos(ImVec2(serversAt_.x, serversAt_.y + 2 * scale_));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(mw, 0), ImVec2(mw, vp.y - serversAt_.y - 16 * scale_));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 4 * scale_));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
+    if (!ImGui::BeginPopup("servermenu")) {
+        ImGui::PopStyleVar(2);
+        return;
+    }
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImageFor images = [this](const std::string& u) { return texture(u); };
+    auto item = [&](uint64_t gid, const std::string& name, bool unread, int mentions) {
+        ImVec2 a = ImGui::GetCursorScreenPos();
+        float w = ImGui::GetContentRegionAvail().x;
+        ImGui::PushID(gid ? IdString(gid).c_str() : "dms");
+        bool clicked = ImGui::InvisibleButton("s", ImVec2(w, row));
+        bool hov = ImGui::IsItemHovered();
+        ImGui::PopID();
+        bool selected = gid == guild_;
+        if (selected || hov) dl->AddRectFilled(a, ImVec2(a.x + w, a.y + row), U32(selected ? c.selected : c.hover));
+        if (selected) dl->AddRectFilled(a, ImVec2(a.x + 3 * scale_, a.y + row), U32(c.accent));
+        guildIcon(dl, gid, ImVec2(a.x + pad, a.y + (row - ic) / 2), ic);
+        float right = a.x + w - pad;
+        if (mentions)
+            right -= mentionBadge(dl, mentions, right, a.y + row / 2) + 6 * scale_;
+        else if (unread)
+            dl->AddCircleFilled(ImVec2(right - 4 * scale_, a.y + row / 2), 3.5f * scale_, U32(c.heading)), right -= 14 * scale_;
+        float tx = a.x + pad + ic + 10 * scale_;
+        ImGui::PushFont(unread || selected ? fonts_.semibold : fonts_.regular, 14);
+        Label(dl, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(tx, a.y + (row - ImGui::GetFontSize()) / 2),
+              U32(unread || selected || hov ? c.heading : c.muted), name, right - tx, images);
+        ImGui::PopFont();
+        if (clicked) {
+            ImGui::CloseCurrentPopup();
+            open(gid, 0);
+        }
+    };
+    int dmMentions = 0;
+    for (uint64_t ch : store_.PrivateChannels()) dmMentions += store_.Mentions(ch);
+    item(0, "Direct messages", false, dmMentions);
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    dl->AddLine(ImVec2(p.x + pad, p.y + 4 * scale_), ImVec2(p.x + mw - pad, p.y + 4 * scale_), U32(c.border));
+    ImGui::Dummy(ImVec2(1, 9 * scale_));
     for (uint64_t gid : store_.GuildsInOrder()) {
         const Guild& g = store_.guilds[gid];
         if (g.unavailable) continue;
-        std::string id = "g" + IdString(gid);
-        if (item(id.c_str(), guild_ == gid, store_.GuildUnread(gid), store_.GuildMentions(gid), g.name,
-                 [&](ImVec2 a, ImVec2 b, float r) {
-                     ImTextureID t = g.icon.empty() ? ImTextureID(0)
-                                                    : texture("https://cdn.discordapp.com/icons/" + IdString(gid) + "/" +
-                                                              g.icon + ".png?size=96");
-                     if (t) {
-                         dl->AddImage(ImTextureRef(t), a, b, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE);
-                     } else {
-                         dl->AddRectFilled(a, b, guild_ == gid ? U32(c.accent) : U32(c.bg));
-                         std::string ini = initials(g.name);
-                         ImGui::PushFont(fonts_.semibold, ini.size() > 3 ? 8.0f : 10.0f);
-                         ImVec2 sz = ImGui::CalcTextSize(ini.c_str());
-                         dl->AddText(ImVec2(a.x + (icon - sz.x) / 2, a.y + (icon - sz.y) / 2), U32(c.text), ini.c_str());
-                         ImGui::PopFont();
-                     }
-                 }))
-            open(gid, 0);
+        item(gid, g.name, store_.GuildUnread(gid), store_.GuildMentions(gid));
     }
-    ImGui::SetCursorPos(ImVec2(0, cy));
-    ImGui::Dummy(ImVec2(1, 4 * scale_));
-    ImGui::EndChild();
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor();
+    ImGui::EndPopup();
+    ImGui::PopStyleVar(2);
+}
+
+bool App::barToggle(const char* id, const char* glyph, ImVec2 a, bool on, const char* tip) {
+    const Palette& c = Colours();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
     ImVec2 o = ImGui::GetWindowPos();
-    float bs = 20 * scale_;
-    ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(o.x + x, o.y + y + h - foot), ImVec2(o.x + x + w, o.y + y + h), U32(c.rail));
-    if (foldButton("foldrail", ImVec2(o.x + x + (w - bs) / 2, o.y + y + h - foot + (foot - bs) / 2), false, "Hide the server list")) {
-        config_.rail = false;
-        SaveConfig(config_);
+    float w = 36 * scale_, h = captionH_;
+    noDrag_.push_back(ImRect(ImVec2(a.x - o.x, 0), ImVec2(a.x - o.x + w, h)));
+    ImGui::SetCursorScreenPos(a);
+    bool pressed = ImGui::InvisibleButton(id, ImVec2(w, h));
+    bool hov = ImGui::IsItemHovered();
+    if (hov) {
+        dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), U32(c.hover));
+        ImGui::SetTooltip("%s", tip);
     }
+    ImGui::PushFont(fonts_.regular, 14);
+    ImVec2 sz = ImGui::CalcTextSize(glyph);
+    dl->AddText(ImVec2(a.x + (w - sz.x) / 2, a.y + (h - sz.y) / 2), U32(hov || on ? c.heading : c.muted), glyph);
+    ImGui::PopFont();
+    return pressed;
 }
 
 // --- sidebar ---
 
 void App::sidebar(float x, float y, float w, float h) {
     const Palette& c = Colours();
-    float header = 48 * scale_, panel = 52 * scale_;
+    // No header: the server's name is in the title bar.
+    float panel = 52 * scale_;
     ImGui::SetCursorPos(ImVec2(x, y));
     ImGui::PushStyleColor(ImGuiCol_ChildBg, c.sidebar);
     ImGui::BeginChild("side", ImVec2(w, h), 0, ImGuiWindowFlags_NoScrollbar);
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImVec2 o = ImGui::GetWindowPos();
-    std::string title = guild_ && store_.guilds.count(guild_) ? store_.guilds[guild_].name : "Direct messages";
-    ImGui::PushFont(fonts_.semibold, kBody);
-    Label(dl, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(o.x + 16 * scale_, o.y + (header - ImGui::GetFontSize()) / 2),
-          U32(c.heading), title, w - 52 * scale_, [this](const std::string& u) { return texture(u); });
-    ImGui::PopFont();
-    dl->AddLine(ImVec2(o.x, o.y + header - 1), ImVec2(o.x + w, o.y + header - 1), U32(c.border), 1);
-    float bs = 20 * scale_;
-    if (foldButton("foldside", ImVec2(o.x + w - bs - 8 * scale_, o.y + (header - bs) / 2), false,
-                   guild_ ? "Hide the channel list" : "Hide the conversation list")) {
-        config_.channels = false;
-        SaveConfig(config_);
-    }
-
-    ImGui::SetCursorPos(ImVec2(0, header));
-    ImGui::BeginChild("list", ImVec2(w, h - header - panel), 0);
+    ImGui::SetCursorPos(ImVec2(0, 0));
+    ImGui::BeginChild("list", ImVec2(w, h - panel), 0);
     ImGui::Dummy(ImVec2(1, 8 * scale_));
     if (guild_)
         channelList(w);
@@ -753,44 +782,6 @@ void App::avatar(uint64_t user, uint64_t guild, ImVec2 at, float size, bool stat
     dl->AddRectFilled(a, ImVec2(a.x + d - edge, a.y + d - edge), statusColour(s));
 }
 
-// --- folding columns ---
-
-bool App::foldButton(const char* id, ImVec2 at, bool pointsRight, const char* tip) {
-    const Palette& c = Colours();
-    float bs = 20 * scale_;
-    ImGui::SetCursorScreenPos(at);
-    bool clicked = ImGui::InvisibleButton(id, ImVec2(bs, bs));
-    bool hov = ImGui::IsItemHovered();
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    if (hov) dl->AddRectFilled(at, ImVec2(at.x + bs, at.y + bs), U32(c.hover));
-    ImGui::PushFont(fonts_.regular, 10);
-    const char* g = pointsRight ? icon::Right : icon::Left;
-    ImVec2 sz = ImGui::CalcTextSize(g);
-    dl->AddText(ImVec2(at.x + (bs - sz.x) / 2, at.y + (bs - sz.y) / 2), U32(hov ? c.heading : c.muted), g);
-    ImGui::PopFont();
-    if (hov) ImGui::SetTooltip("%s", tip);
-    return clicked;
-}
-
-bool App::fold(const char* id, float x, float y, float h, bool pointsRight) {
-    const Palette& c = Colours();
-    float w = 14 * scale_;
-    ImVec2 o = ImGui::GetWindowPos();
-    ImVec2 a(o.x + x, o.y + y);
-    ImGui::SetCursorScreenPos(a);
-    bool clicked = ImGui::InvisibleButton(id, ImVec2(w, h));
-    bool hov = ImGui::IsItemHovered();
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), U32(hov ? c.hover : c.rail));
-    ImGui::PushFont(fonts_.regular, 10);
-    const char* g = pointsRight ? icon::Right : icon::Left;
-    ImVec2 sz = ImGui::CalcTextSize(g);
-    dl->AddText(ImVec2(a.x + (w - sz.x) / 2, a.y + 16 * scale_), U32(hov ? c.heading : c.muted), g);
-    ImGui::PopFont();
-    if (hov) ImGui::SetTooltip("Show");
-    return clicked;
-}
-
 // --- member list ---
 
 void App::memberList(float x, float y, float w, float h) {
@@ -801,15 +792,7 @@ void App::memberList(float x, float y, float w, float h) {
     ImGui::BeginChild("members", ImVec2(w, h), 0);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     float row = 22 * scale_, head = 26 * scale_, av = 16 * scale_, side = 6 * scale_;
-    {
-        ImVec2 o = ImGui::GetWindowPos();
-        float bs = 20 * scale_;
-        if (foldButton("foldmembers", ImVec2(o.x + side, o.y + 6 * scale_ - ImGui::GetScrollY()), true, "Hide the member list")) {
-            config_.members = false;
-            SaveConfig(config_);
-        }
-        ImGui::Dummy(ImVec2(1, bs + 6 * scale_));
-    }
+    ImGui::Dummy(ImVec2(1, 6 * scale_));
 
     auto member = [&](uint64_t uid, const std::string& status) {
         ImGui::SetCursorPosX(side);

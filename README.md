@@ -19,14 +19,16 @@ result is a single `disky.exe` with nothing to install.
 - **Sign in** by scanning the QR code with the Discord app on your phone
   (profile picture, then Scan QR Code), or paste a token. The token is kept
   in `%APPDATA%\disky\config.json`, encrypted with DPAPI.
-- **Servers** are small square icons down the left, in your Discord order (folders flattened);
-  **Direct messages** is the top button. Unread channels are bright, with
-  mention counts in red.
+- **Servers**: the current one's icon and name are at the left of the title
+  bar; click for a menu of them all, in your Discord order (folders
+  flattened), with **Direct messages** first. Unread ones are bright, with
+  mention counts in red; the button shows mentions waiting elsewhere.
+  Unread channels are bright too.
 - **Messages**: Enter sends, Shift+Enter starts a new line. `@`, `:` and
   `#` suggest people, emoji and channels (Tab or Enter picks). Up in an empty
   box edits your last message; Escape cancels a reply or edit.
-- **Fold** the server list, the channel list or the member list away with
-  the small chevron on each; a thin strip brings it back.
+- **Show or hide** the channel list and the member list with their icons
+  in the title bar.
 - **Typing**: who else is typing shows under the box; disky tells Discord
   when you're typing, as its own app does.
 - **Attach** with the paperclip, by dropping files on the window, or by

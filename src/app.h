@@ -82,7 +82,15 @@ private:
     // Drawing.
     void titleBar();
     void login();
-    void rail(float x, float y, float h);
+    // serversButton is the title bar's server picker, at a screen
+    // position; it returns its width. serverMenu is the menu it opens.
+    float serversButton(ImVec2 at);
+    void serverMenu();
+    void guildIcon(ImDrawList* dl, uint64_t guild, ImVec2 at, float size);
+    float mentionBadge(ImDrawList* dl, int count, float right, float y);
+    // barToggle is an icon button in the title bar that shows or hides a
+    // column; on draws it lit.
+    bool barToggle(const char* id, const char* glyph, ImVec2 at, bool on, const char* tip);
     void sidebar(float x, float y, float w, float h);
     void channelList(float w);
     void dmList(float w);
@@ -115,12 +123,6 @@ private:
     void bell(ImVec2 at, float w, float h);
     void notices();
     void settings();
-    // fold draws a column folded away: a thin strip that opens it again.
-    // It returns true when clicked.
-    bool fold(const char* id, float x, float y, float h, bool pointsRight);
-    // foldButton is the small chevron that folds a column, at a screen
-    // position; true when clicked.
-    bool foldButton(const char* id, ImVec2 at, bool pointsRight, const char* tip);
     void avatar(uint64_t user, uint64_t guild, ImVec2 at, float size, bool status = false);
 
     // Helpers.
@@ -188,7 +190,8 @@ private:
     };
     std::deque<Notice> notices_;
     bool noticesOpen_ = false;
-    ImVec2 bellAt_;  // the bell's bottom right, for placing the panel
+    ImVec2 bellAt_;
+    ImVec2 serversAt_;  // where the server menu opens  // the bell's bottom right, for placing the panel
 
     // Message list.
     struct Cached {

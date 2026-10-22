@@ -76,7 +76,6 @@ Config LoadConfig() {
     c.channel = std::strtoull(j.value("channel", "0").c_str(), nullptr, 10);
     c.notify = j.value("notify", true);
     c.members = j.value("members", true);
-    c.rail = j.value("rail", true);
     c.channels = j.value("channels", true);
     c.volume = j.value("volume", 0.5f);
     if (auto it = j.find("recentEmoji"); it != j.end() && it->is_array())
@@ -99,7 +98,6 @@ bool SaveConfig(const Config& c) {
         {"channel", std::to_string(c.channel)},
         {"notify", c.notify},
         {"members", c.members},
-        {"rail", c.rail},
         {"channels", c.channels},
         {"volume", c.volume},
         {"recentEmoji", c.recentEmoji},
