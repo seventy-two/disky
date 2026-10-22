@@ -186,11 +186,13 @@ float App::messageHeight(const Message& m, bool groupStart, float w) {
 void App::messages(float w, float h) {
     const Palette& c = Colours();
     ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 10 * scale_);
-    ImGui::BeginChild("messages", ImVec2(w, h), 0);
-    float cw = ImGui::GetContentRegionAvail().x;
+    // The scrollbar's always there, so the width is known before laying
+    // out, and the scroll can be set before the list is drawn: set after,
+    // it would take a frame, and a new message would show below the view.
+    float cw = w - 10 * scale_;
     Messages& ms = store_.messages[channel_];
-    ImDrawList* dl = ImGui::GetWindowDrawList();
     if (!ms.loaded) {
+        ImGui::BeginChild("messages", ImVec2(w, h), 0);
         const char* t = "Loading…";
         ImVec2 sz = ImGui::CalcTextSize(t);
         ImGui::SetCursorPos(ImVec2((cw - sz.x) / 2, (h - sz.y) / 2));
@@ -230,14 +232,19 @@ void App::messages(float w, float h) {
         prev = &m;
     }
     float total = y + 16 * scale_;
+    float maxY = std::max(0.0f, total - h);
 
-    // Keep the view still when older messages arrive above it.
-    float scroll = ImGui::GetScrollY();
-    if (!atBottom_ && firstShown_ && !rows.empty() && rows.front().m->id != firstShown_) {
+    // Keep the view still when older messages arrive above it, and at the
+    // bottom while the reader's there (until they turn the wheel up).
+    ImVec2 at = ImGui::GetCursorScreenPos();
+    if (ImGui::GetIO().MouseWheel > 0 && ImGui::IsMouseHoveringRect(at, ImVec2(at.x + w, at.y + h)) && maxY > 0)
+        atBottom_ = false;
+    if (atBottom_) {
+        ImGui::SetNextWindowScroll(ImVec2(-1, maxY));
+    } else if (firstShown_ && !rows.empty() && rows.front().m->id != firstShown_) {
         for (const auto& r : rows)
             if (r.m->id == firstShown_) {
-                scroll += r.y - firstShownY_;
-                ImGui::SetScrollY(scroll);
+                ImGui::SetNextWindowScroll(ImVec2(-1, scrollY_ + r.y - firstShownY_));
                 break;
             }
     }
@@ -245,7 +252,9 @@ void App::messages(float w, float h) {
         firstShown_ = rows.front().m->id;
         firstShownY_ = rows.front().y;
     }
-
+    ImGui::BeginChild("messages", ImVec2(w, h), 0, ImGuiWindowFlags_AlwaysVerticalScrollbar);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    float scroll = ImGui::GetScrollY();
     float view = ImGui::GetWindowHeight();
     hovered_ = 0;
     if (ms.reachedStart) {
@@ -298,10 +307,9 @@ void App::messages(float w, float h) {
     bool userScrolled = (ImGui::IsWindowHovered() && io.MouseWheel != 0) ||
                         ImGui::GetActiveID() == ImGui::GetWindowScrollbarID(win, ImGuiAxis_Y) ||
                         (ImGui::IsWindowFocused() && (ImGui::IsKeyPressed(ImGuiKey_PageUp) || ImGui::IsKeyPressed(ImGuiKey_PageDown)));
-    float maxY = std::max(0.0f, total - view);
     if (userScrolled) atBottom_ = scroll >= maxY - 4 * scale_ && io.MouseWheel <= 0;
     else if (!atBottom_ && scroll >= maxY - 2 && maxY > 0) atBottom_ = true;
-    if (atBottom_) ImGui::SetScrollY(maxY);
+    scrollY_ = scroll;
     if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(ImGuiKey_PageUp)) ImGui::SetScrollY(scroll - view * 0.8f);
     if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(ImGuiKey_PageDown)) ImGui::SetScrollY(scroll + view * 0.8f);
     if (scroll < 600 * scale_ && !ms.reachedStart && !ms.loadingOlder && (!atBottom_ || total < view + 600 * scale_))

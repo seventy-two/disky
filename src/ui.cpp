@@ -76,9 +76,16 @@ void App::Frame() {
                        (guild_ || (store_.channels.count(channel_) && store_.channels[channel_].type == chan::GroupDM));
         float memW = members && w > 900 * scale_ ? 200 * scale_ : 0;
         rail(0, top, h);
-        sidebar(railW, top, sideW, h);
+        sidebar(railW, top, sideW - 1, h);
         chat(railW + sideW, top, w - railW - sideW - memW, h);
-        if (memW > 0) memberList(w - memW, top, memW, h);
+        if (memW > 0) memberList(w - memW + 1, top, memW - 1, h);
+        // Lines between the columns, in the pixel left between them, so the
+        // greys don't run together.
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        ImVec2 o = ImGui::GetWindowPos();
+        dl->AddRectFilled(ImVec2(o.x + railW + sideW - 1, o.y + top), ImVec2(o.x + railW + sideW, o.y + top + h), U32(c.border));
+        if (memW > 0)
+            dl->AddRectFilled(ImVec2(o.x + w - memW, o.y + top), ImVec2(o.x + w - memW + 1, o.y + top + h), U32(c.border));
         emojiPicker();
         settings();
     }
@@ -360,18 +367,17 @@ void App::channelList(float w) {
     ImageFor images = [this](const std::string& u) { return texture(u); };
     const Palette& c = Colours();
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    float row = 32 * scale_, side = 8 * scale_;
+    float row = 24 * scale_, side = 6 * scale_;
     for (uint64_t id : store_.GuildChannels(guild_)) {
         const Channel& ch = store_.channels[id];
         if (ch.type == chan::Category) {
-            ImGui::Dummy(ImVec2(1, 10 * scale_));
+            ImGui::Dummy(ImVec2(1, 6 * scale_));
             std::string name = ch.name;
             std::transform(name.begin(), name.end(), name.begin(), ::toupper);
-            ImGui::SetCursorPosX(side + 8 * scale_);
-            ImGui::PushFont(fonts_.semibold, 12);
+            ImGui::SetCursorPosX(side + 6 * scale_);
+            ImGui::PushFont(fonts_.semibold, 11);
             ImGui::TextDisabled("%s", name.c_str());
             ImGui::PopFont();
-            ImGui::Dummy(ImVec2(1, 2 * scale_));
             continue;
         }
         bool selected = id == channel_;
@@ -386,17 +392,17 @@ void App::channelList(float w) {
         ImGui::PopID();
         if (selected || hov) dl->AddRectFilled(a, b, U32(selected ? c.selected : c.hover));
         if (unread && !selected)
-            dl->AddRectFilled(ImVec2(ImGui::GetWindowPos().x, a.y + row / 2 - 4 * scale_),
-                              ImVec2(ImGui::GetWindowPos().x + 4 * scale_, a.y + row / 2 + 4 * scale_), U32(c.heading));
+            dl->AddRectFilled(ImVec2(ImGui::GetWindowPos().x, a.y + row / 2 - 3 * scale_),
+                              ImVec2(ImGui::GetWindowPos().x + 3 * scale_, a.y + row / 2 + 3 * scale_), U32(c.heading));
         ImU32 col = selected || unread ? U32(c.heading) : hov ? U32(c.text) : U32(c.muted, muted ? 0.5f : 1.0f);
-        ImGui::PushFont(fonts_.regular, 20);
+        ImGui::PushFont(fonts_.regular, 15);
         float hashY = a.y + (row - ImGui::GetFontSize()) / 2;
-        dl->AddText(ImVec2(a.x + 8 * scale_, hashY), U32(c.muted, muted ? 0.5f : 1.0f), ch.type == chan::News ? "\xE2\x80\xBC" : "#");
+        dl->AddText(ImVec2(a.x + 6 * scale_, hashY), U32(c.muted, muted ? 0.5f : 1.0f), ch.type == chan::News ? "\xE2\x80\xBC" : "#");
         ImGui::PopFont();
-        ImGui::PushFont(unread || selected ? fonts_.semibold : fonts_.regular, kBody);
+        ImGui::PushFont(unread || selected ? fonts_.semibold : fonts_.regular, 14);
         float right = mentions ? 28 * scale_ : 4 * scale_;
-        float avail = b.x - right - (a.x + 30 * scale_);
-        Label(dl, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(a.x + 30 * scale_, a.y + (row - ImGui::GetFontSize()) / 2), col,
+        float avail = b.x - right - (a.x + 22 * scale_);
+        Label(dl, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(a.x + 22 * scale_, a.y + (row - ImGui::GetFontSize()) / 2), col,
               ch.name, avail, images);
         ImGui::PopFont();
         if (mentions) {
@@ -411,7 +417,6 @@ void App::channelList(float w) {
         }
         if (hov && !ch.topic.empty()) ImGui::SetItemTooltip("%s", ch.topic.substr(0, 200).c_str());
         if (clicked) open(guild_, id);
-        ImGui::Dummy(ImVec2(1, 2 * scale_));
     }
 }
 
