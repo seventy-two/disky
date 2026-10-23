@@ -388,6 +388,8 @@ void App::open(uint64_t guild, uint64_t channel) {
     if (guild) lastChannel_[guild] = channel;
     config_.guild = guild;
     config_.channel = channel;
+    // Direct messages with none picked: show the list to pick from.
+    if (!guild && !channel) config_.channels = true;
     SaveConfig(config_);
     if (changed) {
         std::fill(draft_.begin(), draft_.end(), 0);
