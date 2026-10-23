@@ -124,6 +124,7 @@ void App::titleBar() {
                       config_.channels ? (guild_ ? "Hide the channel list" : "Hide the conversation list")
                                        : (guild_ ? "Show the channel list" : "Show the conversation list"))) {
             config_.channels = !config_.channels;
+            listShownForDMs_ = false;
             SaveConfig(config_);
         }
         left += 36 * scale_;

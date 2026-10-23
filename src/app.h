@@ -165,6 +165,9 @@ private:
     // gifWanted_ says one was this frame.
     std::unique_ptr<VideoPlayer> gif_;
     bool gifWanted_ = false;
+    // listShownForDMs_: the channel list was hidden, and opened only to pick a
+    // DM; it hides again on going back to a server.
+    bool listShownForDMs_ = false;
     Store store_;
     bool ready_ = false;
     std::string status_;  // connection trouble, for the title bar
