@@ -361,15 +361,16 @@ void App::message(const Message& m, bool groupStart, bool alt, float w, float h)
     ImVec2 mouse = ImGui::GetMousePos();
     bool hov = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) && mouse.y >= rowTop &&
                mouse.y < o.y + h && mouse.x >= o.x && mouse.x < o.x + w && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
-    bool mentioned = store_.MentionsMe(m) || (m.reply && m.reply->authorId == store_.me && m.authorId != store_.me);
-    if (mentioned) {
-        dl->AddRectFilled(ImVec2(o.x, rowTop), ImVec2(o.x + w, o.y + h), U32(c.mention));
-        dl->AddRectFilled(ImVec2(o.x, rowTop), ImVec2(o.x + 2 * scale_, o.y + h), U32(c.mentionBar));
-    }
+    // Messages that would notify get a faint line down the left; not in DMs,
+    // where every message does.
+    auto ch = store_.channels.find(m.channelId);
+    bool dm = ch != store_.channels.end() && ch->second.IsPrivate();
+    bool mentioned = !dm && (store_.MentionsMe(m) || (m.reply && m.reply->authorId == store_.me && m.authorId != store_.me));
     if (hov || contextMessage_ == m.id) {
         hovered_ = m.id;
-        dl->AddRectFilled(ImVec2(o.x, rowTop), ImVec2(o.x + w, o.y + h), U32(c.hover, mentioned ? 0.5f : 1.0f));
+        dl->AddRectFilled(ImVec2(o.x, rowTop), ImVec2(o.x + w, o.y + h), U32(c.hover));
     }
+    if (mentioned) dl->AddRectFilled(ImVec2(o.x, rowTop), ImVec2(o.x + 2 * scale_, o.y + h), U32(c.mentionBar));
     std::string author = store_.DisplayName(m.guildId, m.authorId);
 
     // The reply's original, in a line above.

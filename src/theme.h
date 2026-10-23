@@ -9,7 +9,7 @@ namespace disky {
 
 struct Palette {
     ImVec4 rail, sidebar, bg, text, muted, heading, accent, link, input, code, border, hover, selected;
-    ImVec4 good, idle, dnd, bad, mention, mentionBar, spoiler;
+    ImVec4 good, idle, dnd, bad, mentionBar, spoiler;
     ImVec4 band;  // every other author's messages sit on this
 };
 

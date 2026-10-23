@@ -19,12 +19,12 @@ namespace {
 
 // kitchensink's dark palette: near-black blue-greys, one blue accent.
 // Order: rail, sidebar, bg, text, muted, heading, accent, link, input,
-// code, border, hover, selected, good, idle, dnd, bad, mention,
+// code, border, hover, selected, good, idle, dnd, bad,
 // mentionBar, spoiler, band.
 const Palette kDark = {
     Hex(0x101216), Hex(0x1A1D23), Hex(0x15171C), Hex(0xE6E8EC), Hex(0x8C929D), Hex(0xF4F5F7), Hex(0x5AA8FF),
     Hex(0x5AA8FF), Hex(0x2A2E37), Hex(0x1E2128), Hex(0x2B2F38), Hex(0x262A33), Hex(0x2B2F38), Hex(0x3FB950),
-    Hex(0xD9A23A), Hex(0xF8645A), Hex(0xF8645A), Hex(0xD9A23A, 0.08f), Hex(0xD9A23A), Hex(0x0B0C0F), Hex(0x1A1D23),
+    Hex(0xD9A23A), Hex(0xF8645A), Hex(0xF8645A), Hex(0xA78BFA, 0.6f), Hex(0x0B0C0F), Hex(0x1A1D23),
 };
 
 Palette current = kDark;
