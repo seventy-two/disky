@@ -22,6 +22,7 @@
 #include "markdown.h"
 #include "mic.h"
 #include "remoteauth.h"
+#include "stream.h"
 #include "richtext.h"
 #include "store.h"
 #include "theme.h"
@@ -92,6 +93,13 @@ private:
     // muted, or for Settings' meter), tells the call how to send, and hooks
     // the push-to-talk key while it's needed.
     void updateVoice();
+    // Streams (Go Live): watching one (joining its channel first if need
+    // be), connecting once Discord says where, and stopping.
+    void watchStream(uint64_t guild, uint64_t channel, uint64_t user);
+    void connectStream();
+    void stopWatching(bool tell = true);
+    // streamView draws the stream where the chat goes.
+    void streamView(float x, float y, float w, float h);
     void applySending();
     // pushToTalk is the low-level hooks': a key or mouse button went down
     // or up. True to swallow it: the press that binds a new key.
@@ -328,6 +336,20 @@ private:
     HHOOK keyHook_ = nullptr, mouseHook_ = nullptr;
     bool bindingKey_ = false;         // the next key pressed becomes push-to-talk
     bool pttHeld_ = false;
+
+    // The stream being watched: its key ("guild:g:c:u"), who, the server
+    // Discord's put it on, the connection and the decoder.
+    std::string streamKey_;
+    uint64_t streamUser_ = 0, streamServer_ = 0;
+    std::string streamToken_, streamEndpoint_;
+    bool watchPending_ = false;  // asked for once the call's connected
+    std::unique_ptr<VoiceConnection> streamConn_;
+    std::shared_ptr<StreamDecoder> decoder_;
+    std::string streamEnded_;    // why it stopped, shown until dismissed
+    bool streamShown_ = true;    // the stream rather than the chat
+    bool streamFull_ = false;    // the whole window, columns hidden
+    double fpsAt_ = 0;
+    int fpsFrames_ = 0, fps_ = 0;
 
     // Emoji picker: for a reaction (message set) or the composer.
     bool pickerOpen_ = false;

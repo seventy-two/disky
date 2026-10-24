@@ -19,6 +19,14 @@ public:
         std::string sessionId, token, endpoint;
         std::string userAgent;
         std::string output;  // the output device's name; empty for Windows' default
+        // Which voice server and encryption group: for a call the guild
+        // and channel; for a stream, Discord's rtc_server_id and one less.
+        Snowflake serverId = 0, group = 0;
+        // A stream: watched, not talked in. Its picture comes as H.264
+        // frames (Annex B) to video, on the connection's thread.
+        bool stream = false;
+        Snowflake streamer = 0;
+        std::function<void(std::string)> video;
     };
     // wake is called from the connection's threads when something's
     // changed: its state, or who's speaking.
@@ -55,6 +63,11 @@ public:
     void PushMic(const float* samples, size_t n);
     // Transmitting says we're sending sound now.
     bool Transmitting() const;
+    // RequestKeyFrame asks a stream's sender for a whole new picture, after
+    // loss or a decoding error.
+    void RequestKeyFrame();
+    // VideoCodec is the stream's, as the server said; empty until known.
+    std::string VideoCodec() const;
 
 private:
     struct Impl;

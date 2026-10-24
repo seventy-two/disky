@@ -81,10 +81,12 @@ void App::Frame() {
         ImGui::TextDisabled("%s", text);
     } else {
         // The columns either side are shown or hidden from the title bar.
-        float sideW = config_.channels ? 240 * scale_ : 0;
-        float voiceW = guild_ && config_.voice ? 200 * scale_ : 0;
+        // A stream can have the whole window.
+        bool full = streamFull_ && !streamKey_.empty() && streamShown_;
+        float sideW = config_.channels && !full ? 240 * scale_ : 0;
+        float voiceW = guild_ && config_.voice && !full ? 200 * scale_ : 0;
         bool hasMembers = channel_ && (guild_ || (store_.channels.count(channel_) && store_.channels[channel_].type == chan::GroupDM));
-        float memW = hasMembers && config_.members && w > 900 * scale_ ? 200 * scale_ : 0;
+        float memW = hasMembers && config_.members && !full && w > 900 * scale_ ? 200 * scale_ : 0;
         if (sideW > 0) sidebar(0, top, sideW - 1, h);
         if (voiceW > 0) voiceList(sideW, top, voiceW - 1, h);
         chat(sideW + voiceW, top, w - sideW - voiceW - memW, h);
@@ -748,7 +750,15 @@ void App::voiceList(float x, float y, float w, float h) {
                 ImGui::OpenPopup("volume");
             }
             ImGui::PopID();
-            if (whoHov && id == voiceChannel_ && v.userId != store_.me) ImGui::SetTooltip("Right-click for their volume");
+            bool watching = !streamKey_.empty() && streamUser_ == v.userId;
+            if (v.streaming && v.userId != store_.me && ImGui::IsItemClicked(ImGuiMouseButton_Left)) watchStream(guild_, id, v.userId);
+            if (whoHov && v.streaming && v.userId != store_.me)
+                ImGui::SetTooltip("%s", watching ? "Click to show their stream" : id == voiceChannel_ ? "Click to watch their stream"
+                                                                                                     : "Click to join and watch their stream");
+            else if (whoHov && id == voiceChannel_ && v.userId != store_.me)
+                ImGui::SetTooltip("Right-click for their volume");
+            if (watching) dl->AddRectFilled(pa, pb, U32(c.selected));
+            else if (whoHov && v.streaming) dl->AddRectFilled(pa, pb, U32(c.hover));
             ImVec2 ap(pa.x, pa.y + (personRow - av) / 2);
             avatar(v.userId, guild_, ap, av);
             // A green ring while they're talking (only heard in our call).
@@ -847,6 +857,7 @@ void App::voicePanel(float x, float y, float w) {
     }
     std::string where = store_.ChannelName(voiceChannel_);
     if (auto g = store_.guilds.find(voiceGuild_); g != store_.guilds.end()) where += " / " + g->second.name;
+    if (!streamEnded_.empty()) where = streamEnded_;
     ImGui::PushFont(fonts_.regular, 12);
     ImageFor images = [this](const std::string& u) { return texture(u); };
     Label(dl, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(a.x + pad, a.y + 28 * scale_), U32(c.muted), where, textW, images);
@@ -889,6 +900,86 @@ void App::voicePanel(float x, float y, float w) {
     ImGui::PopStyleColor();
     ImGui::SetItemTooltip("Leave");
     ImGui::PopFont();
+    ImGui::PopStyleColor();
+}
+
+void App::streamView(float x, float y, float w, float h) {
+    const Palette& c = Colours();
+    ImGui::SetCursorPos(ImVec2(x, y));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 1));
+    ImGui::BeginChild("stream", ImVec2(w, h), 0, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 o = ImGui::GetWindowPos();
+    std::string who = store_.DisplayName(voiceGuild_, streamUser_);
+    ID3D11ShaderResourceView* tex = decoder_ ? decoder_->Frame() : nullptr;
+    // Frames per second, counted each second.
+    if (decoder_ && now_ - fpsAt_ >= 1) {
+        fps_ = int((decoder_->Decoded() - fpsFrames_) / std::max(1.0, now_ - fpsAt_) + 0.5);
+        fpsFrames_ = decoder_->Decoded();
+        fpsAt_ = now_;
+    }
+    ImGui::SetCursorPos(ImVec2(0, 0));
+    ImGui::InvisibleButton("picture", ImVec2(w, h));
+    bool hov = ImGui::IsItemHovered();
+    if (hov && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) streamFull_ = !streamFull_;
+    if (streamFull_ && ImGui::IsKeyPressed(ImGuiKey_Escape)) streamFull_ = false;
+    if (tex && decoder_->Width() > 0) {
+        float vw = float(decoder_->Width()), vh = float(decoder_->Height());
+        float k = std::min(w / vw, h / vh);
+        ImVec2 sz(vw * k, vh * k), a(o.x + (w - sz.x) / 2, o.y + (h - sz.y) / 2);
+        dl->AddImage(ImTextureRef(ImTextureID(tex)), a, ImVec2(a.x + sz.x, a.y + sz.y));
+    } else {
+        std::string text;
+        std::string codec = streamConn_ ? streamConn_->VideoCodec() : "";
+        if (decoder_ && !decoder_->Error().empty())
+            text = decoder_->Error();
+        else if (!codec.empty() && codec != "H264")
+            text = who + " is streaming in " + codec + ", which disky can't show yet.";
+        else if (streamConn_ && streamConn_->GetState() == VoiceConnection::State::Failed)
+            text = "Couldn't connect to the stream: " + streamConn_->Error();
+        else
+            text = streamConn_ && streamConn_->GetState() == VoiceConnection::State::Connected ? "Waiting for the picture…"
+                                                                                                : "Connecting to " + who + "'s stream…";
+        ImVec2 sz = ImGui::CalcTextSize(text.c_str());
+        dl->AddText(ImVec2(o.x + (w - sz.x) / 2, o.y + (h - sz.y) / 2), U32(c.muted), text.c_str());
+    }
+    // A bar along the top while the mouse is over the picture.
+    if (hov || !tex) {
+        float bh = 36 * scale_;
+        dl->AddRectFilledMultiColor(o, ImVec2(o.x + w, o.y + bh), IM_COL32(0, 0, 0, 170), IM_COL32(0, 0, 0, 170), IM_COL32(0, 0, 0, 0),
+                                    IM_COL32(0, 0, 0, 0));
+        ImGui::PushFont(fonts_.semibold, 14);
+        std::string title = who + "'s stream";
+        if (tex) title += "   " + std::to_string(decoder_->Width()) + "x" + std::to_string(decoder_->Height()) + "  " + std::to_string(fps_) + " fps";
+        dl->AddText(ImVec2(o.x + 12 * scale_, o.y + 9 * scale_), IM_COL32(255, 255, 255, 230), title.c_str());
+        ImGui::PopFont();
+        if (tex && ImGui::GetIO().KeyShift) {
+            // Shift shows how the decoder laid the picture out.
+            std::string info = decoder_->Info();
+            dl->AddText(ImVec2(o.x + 12 * scale_, o.y + 26 * scale_), IM_COL32(255, 255, 255, 160), info.c_str());
+        }
+    }
+    // Buttons: back to the chat, the whole window, and stop.
+    float bs = 28 * scale_, pad = 6 * scale_;
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0.5f));
+    ImGui::PushFont(fonts_.regular, 15);
+    ImGui::SetCursorPos(ImVec2(w - (bs + pad) * 3, pad));
+    if (ImGui::Button(icon::Chat, ImVec2(bs, bs))) {
+        streamShown_ = false;
+        streamFull_ = false;
+    }
+    ImGui::SetItemTooltip("Back to the chat (the stream keeps going)");
+    ImGui::SameLine(0, pad);
+    if (ImGui::Button(streamFull_ ? icon::Restore : icon::Maximise, ImVec2(bs, bs))) streamFull_ = !streamFull_;
+    ImGui::SetItemTooltip("%s", streamFull_ ? "Show the lists again (Escape)" : "Fill the window (or double-click)");
+    ImGui::SameLine(0, pad);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, c.dnd);
+    if (ImGui::Button(icon::Close, ImVec2(bs, bs))) stopWatching();
+    ImGui::PopStyleColor();
+    ImGui::SetItemTooltip("Stop watching");
+    ImGui::PopFont();
+    ImGui::PopStyleColor();
+    ImGui::EndChild();
     ImGui::PopStyleColor();
 }
 

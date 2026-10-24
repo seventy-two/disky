@@ -42,7 +42,13 @@ result is a single `disky.exe` with nothing to install.
   the list mutes, deafens and leaves. Settings has the microphone and
   speakers, and voice activity (with a meter, to set the level it sends
   above) or push to talk, on any key or the middle and side mouse buttons,
-  working while disky's in the background. Calls are end-to-end
+  working while disky's in the background.
+- **Streams**: click someone with a LIVE badge to watch (joining their
+  channel first if need be). The stream shows where the chat goes, with
+  its sound; hover for its size and frame rate, double-click (or the
+  square) to fill the window, and the speech bubble goes back to the chat
+  while it keeps playing. H.264 only, which is what Discord streams to a
+  viewer that asks for it. Calls are end-to-end
   encrypted (Discord's DAVE) like everyone else's. Each call is logged
   (nothing secret) to `%APPDATA%\disky\voice.log`.
 - **Typing**: who else is typing shows under the box; disky tells Discord
@@ -74,7 +80,7 @@ store, the markdown parser, GIF frames and voice packets) also build on
 Linux:
 
 ```sh
-g++ -std=c++17 -I src -I third_party tests/tests.cpp src/commands.cpp src/store.cpp src/markdown.cpp src/gif.cpp src/rtp.cpp -o tests && ./tests
+g++ -std=c++17 -I src -I third_party tests/tests.cpp src/commands.cpp src/store.cpp src/markdown.cpp src/gif.cpp src/rtp.cpp src/h264.cpp -o tests && ./tests
 ```
 
 `tools/genemoji.py` regenerates `src/emoji_data.inc` (the picker's emoji and
@@ -92,7 +98,10 @@ shortcodes) from gemoji's `emoji.json`.
 - Voice: voice gateway v8, UDP with `aead_aes256_gcm_rtpsize` (AES-GCM from
   Windows' BCrypt), DAVE end-to-end encryption through libdave's C API,
   Opus at 64kbps mono with in-band error correction, and miniaudio for the
-  microphone and speakers.
+  microphone and speakers. Streams use a second connection to their own
+  server, H.264 put back together from its RTP packets and decrypted per
+  frame, Windows' H.264 decoder (Media Foundation), and an RTCP picture
+  loss request for a key frame when packets go missing.
 
 Third-party code: Dear ImGui (MIT), nlohmann/json (MIT), Nayuki's QR Code
 generator (MIT), gemoji's emoji list (MIT), miniaudio (MIT-0). Built by

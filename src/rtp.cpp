@@ -27,6 +27,7 @@ bool ParseRtp(const uint8_t* p, size_t n, Rtp* r) {
     r->extension = p[0] & 0x10;
     int csrcs = p[0] & 0x0F;
     r->payloadType = p[1] & 0x7F;
+    r->marker = p[1] & 0x80;
     r->seq = be16(p + 2);
     r->timestamp = be32(p + 4);
     r->ssrc = be32(p + 8);

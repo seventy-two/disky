@@ -107,6 +107,10 @@ const Layout& App::textLayout(const std::string& key, const std::string& text, f
 // --- the channel ---
 
 void App::chat(float x, float y, float w, float h) {
+    if (!streamKey_.empty() && streamShown_) {
+        streamView(x, y, w, h);
+        return;
+    }
     ImGui::SetCursorPos(ImVec2(x, y));
     ImGui::BeginChild("chat", ImVec2(w, h), 0, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     if (!channel_) {

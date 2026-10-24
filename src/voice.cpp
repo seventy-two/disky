@@ -21,6 +21,7 @@
 #include "miniaudio/miniaudio.h"
 #include "net.h"
 #include "opus/opus.h"
+#include "h264.h"
 #include "rtp.h"
 
 namespace disky {
@@ -46,13 +47,13 @@ constexpr int Identify = 0, SelectProtocol = 1, Ready = 2, Heartbeat = 3, Sessio
 
 const uint8_t kSilence[] = {0xF8, 0xFF, 0xFE};
 
-// log writes to %APPDATA%\disky\voice.log, started afresh for each
-// connection. Never anything secret: no tokens or keys.
+// log writes to %APPDATA%\disky\voice.log, started afresh each time disky
+// runs. Never anything secret: no tokens or keys.
 std::mutex logMu;
 FILE* logFile = nullptr;
 void openLog() {
     std::lock_guard<std::mutex> lock(logMu);
-    if (logFile) fclose(logFile);
+    if (logFile) return;
     wchar_t* appdata = nullptr;
     size_t n = 0;
     if (_wdupenv_s(&appdata, &n, L"APPDATA") || !appdata) return;
@@ -248,7 +249,7 @@ public:
 
     // Decrypt takes a speaker's frame out of end-to-end encryption; false
     // if it can't be yet (keys still being agreed).
-    bool Decrypt(const std::string& user, const std::string& in, std::string& out) {
+    bool Decrypt(const std::string& user, const std::string& in, std::string& out, DAVEMediaType type = DAVE_MEDIA_TYPE_AUDIO) {
         auto it = decryptors_.find(user);
         if (it == decryptors_.end()) {
             // Unencrypted calls pass straight through.
@@ -258,10 +259,10 @@ public:
             }
             return false;
         }
-        size_t cap = daveDecryptorGetMaxPlaintextByteSize(it->second, DAVE_MEDIA_TYPE_AUDIO, in.size());
+        size_t cap = daveDecryptorGetMaxPlaintextByteSize(it->second, type, in.size());
         out.resize(cap);
         size_t n = 0;
-        auto rc = daveDecryptorDecrypt(it->second, DAVE_MEDIA_TYPE_AUDIO, reinterpret_cast<const uint8_t*>(in.data()), in.size(),
+        auto rc = daveDecryptorDecrypt(it->second, type, reinterpret_cast<const uint8_t*>(in.data()), in.size(),
                                        reinterpret_cast<uint8_t*>(out.data()), cap, &n);
         if (rc != DAVE_DECRYPTOR_RESULT_CODE_SUCCESS) {
             if (++failures_ % 50 == 1) vlog("dave: decrypt failed (" + std::to_string(int(rc)) + "), " + std::to_string(failures_) + " so far");
@@ -429,6 +430,13 @@ struct VoiceConnection::Impl {
     OpusEncoder* encoder = nullptr;
     Gate gate;
 
+    // A stream's picture.
+    H264Assembler assembler;
+    std::atomic<uint32_t> videoSsrc{0};
+    Clock::time_point lastKeyRequest{};
+    std::string videoCodec;  // guarded by mu
+    int videoFrames = 0;
+
     void setState(State s, const std::string& why = {}) {
         {
             std::lock_guard<std::mutex> lock(mu);
@@ -463,13 +471,16 @@ struct VoiceConnection::Impl {
     void sendOpus(const uint8_t* frame, size_t n);
     void sendSilence(int frames);
     void sender();
+    void video(const Rtp& r, const uint8_t* b, size_t n);
+    void requestKeyFrame();
     void startAudio();
     static void audioCallback(ma_device* d, void* out, const void*, ma_uint32 frames);
 };
 
 void VoiceConnection::Impl::run() {
     openLog();
-    vlog("connecting to the voice server for channel " + IdString(p.channelId));
+    vlog(std::string(p.stream ? "connecting to a stream in channel " : "connecting to the voice server for channel ") +
+         IdString(p.channelId));
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
     bool resume = false;
@@ -557,7 +568,7 @@ bool VoiceConnection::Impl::session(bool resume, std::string& err, USHORT& close
         if (heartbeat.joinable()) heartbeat.join();
     };
 
-    std::string guild = IdString(p.guildId), user = IdString(p.userId);
+    std::string guild = IdString(p.serverId), user = IdString(p.userId);
     bool reached = false;
     std::string msg;
     bool binary = false;
@@ -585,11 +596,16 @@ bool VoiceConnection::Impl::session(bool resume, std::string& err, USHORT& close
             if (resume) {
                 sendJson(vop::Resume, {{"server_id", guild}, {"session_id", p.sessionId}, {"token", p.token}, {"seq_ack", seq.load()}});
             } else {
-                sendJson(vop::Identify, {{"server_id", guild},
-                                         {"user_id", user},
-                                         {"session_id", p.sessionId},
-                                         {"token", p.token},
-                                         {"max_dave_protocol_version", daveMaxSupportedProtocolVersion()}});
+                json id = {{"server_id", guild},
+                           {"user_id", user},
+                           {"session_id", p.sessionId},
+                           {"token", p.token},
+                           {"max_dave_protocol_version", daveMaxSupportedProtocolVersion()}};
+                if (p.stream) {
+                    id["video"] = true;
+                    id["streams"] = json::array({{{"type", "screen"}, {"rid", "100"}, {"quality", 100}}});
+                }
+                sendJson(vop::Identify, id);
             }
             break;
         }
@@ -616,17 +632,28 @@ bool VoiceConnection::Impl::session(bool resume, std::string& err, USHORT& close
                 break;
             }
             vlog("UDP up");
+            json codecs = json::array({{{"name", "opus"}, {"type", "audio"}, {"priority", 1000}, {"payload_type", kOpusPayloadType}}});
+            // H.264 is the one codec Windows decodes everywhere, so it's the
+            // only one offered; the streamer sends what everyone can take.
+            if (p.stream)
+                codecs.push_back({{"name", "H264"}, {"type", "video"}, {"priority", 1000}, {"payload_type", kH264PayloadType},
+                                  {"rtx_payload_type", kH264PayloadType + 1}, {"encode", false}, {"decode", true}});
             sendJson(vop::SelectProtocol,
                      {{"protocol", "udp"},
                       {"data", {{"address", myIp}, {"port", myPort}, {"mode", "aead_aes256_gcm_rtpsize"}}},
-                      {"codecs", json::array({{{"name", "opus"}, {"type", "audio"}, {"priority", 1000}, {"payload_type", kOpusPayloadType}}})}});
+                      {"codecs", codecs}});
             break;
         }
         case vop::SessionDescription: {
             std::vector<uint8_t> key;
             for (const auto& k : d.value("secret_key", json::array())) key.push_back(uint8_t(k.get<int>()));
             int daveVersion = d.value("dave_protocol_version", 0);
-            vlog("session: mode " + d.value("mode", std::string()) + ", DAVE v" + std::to_string(daveVersion));
+            vlog("session: mode " + d.value("mode", std::string()) + ", DAVE v" + std::to_string(daveVersion) +
+                 (p.stream ? ", video " + d.value("video_codec", std::string("?")) : ""));
+            {
+                std::lock_guard<std::mutex> lock(mu);
+                videoCodec = d.value("video_codec", std::string());
+            }
             {
                 std::lock_guard<std::mutex> lock(aesMu);
                 if (!aes.SetKey(key)) {
@@ -642,9 +669,11 @@ bool VoiceConnection::Impl::session(bool resume, std::string& err, USHORT& close
             }
             if (!udpThread.joinable()) udpThread = std::thread(&Impl::receive, this);
             startAudio();
+            // A stream wants every picture there is.
+            if (p.stream) sendJson(15, {{"any", 100}});
             // A little silence first, before the sender (which owns the
-            // packet counters from then on) starts.
-            if (!senderThread.joinable()) {
+            // packet counters from then on) starts. Not for a stream.
+            if (!p.stream && !senderThread.joinable()) {
                 sendSilence(5);
                 senderThread = std::thread(&Impl::sender, this);
             }
@@ -666,6 +695,11 @@ bool VoiceConnection::Impl::session(bool resume, std::string& err, USHORT& close
         case vop::Speaking:
         case vop::ClientConnect: {
             Snowflake uid = ParseId(d.value("user_id", json()));
+            if (op == vop::ClientConnect) {
+                vlog("video op: user " + IdString(uid) + ", audio " + std::to_string(d.value("audio_ssrc", 0u)) + ", video " +
+                     std::to_string(d.value("video_ssrc", 0u)));
+                if (uint32_t v = d.value("video_ssrc", 0u)) videoSsrc = v;
+            }
             uint32_t s = op == vop::Speaking ? d.value("ssrc", 0u) : d.value("audio_ssrc", 0u);
             if (uid && s) {
                 std::lock_guard<std::mutex> lock(mu);
@@ -754,12 +788,25 @@ void VoiceConnection::Impl::receive() {
 
 void VoiceConnection::Impl::packet(const uint8_t* b, size_t n) {
     Rtp r;
-    if (!ParseRtp(b, n, &r) || r.payloadType != kOpusPayloadType) return;
+    if (!ParseRtp(b, n, &r)) return;
+    if (p.stream && r.payloadType == kH264PayloadType) {
+        video(r, b, n);
+        return;
+    }
+    if (r.payloadType != kOpusPayloadType) return;
     Snowflake user = 0;
     {
         std::lock_guard<std::mutex> lock(mu);
         auto it = speakers.find(r.ssrc);
-        if (it == speakers.end()) return;  // not yet known who it is
+        if (it == speakers.end()) {
+            if (!p.stream) return;  // not yet known who it is
+            // A stream's only sound is the streamer's.
+            auto& sp = speakers[r.ssrc];
+            sp = std::make_unique<Speaker>();
+            sp->user = p.streamer;
+            ssrcOf[p.streamer] = r.ssrc;
+            it = speakers.find(r.ssrc);
+        }
         user = it->second->user;
     }
     Sealed s;
@@ -809,17 +856,72 @@ void VoiceConnection::Impl::packet(const uint8_t* b, size_t n) {
     if (startedSpeaking) wake();
 }
 
-void VoiceConnection::Impl::sendOpus(const uint8_t* frame, size_t n) {
-    std::string header = RtpHeader(sendSeq++, sendTs, ssrc);
+void VoiceConnection::Impl::video(const Rtp& r, const uint8_t* b, size_t n) {
+    Sealed s;
+    if (!SplitSealed(r, n, b, &s)) return;
+    std::string plain;
+    {
+        std::lock_guard<std::mutex> lock(aesMu);
+        if (!aes.Ready() || !aes.Open(s.nonce, b, r.header, b + s.cipher, s.cipherLen, b + s.tag, plain)) return;
+    }
+    if (!Unwrap(r, plain)) return;
+    videoSsrc = r.ssrc;
+    std::string frame;
+    bool lost = false;
+    bool done = assembler.Packet(r.seq, r.timestamp, r.marker, plain, &frame, &lost);
+    if (lost) requestKeyFrame();
+    if (!done) return;
+    std::string out;
+    {
+        std::lock_guard<std::mutex> lock(daveMu);
+        if (!dave || !dave->Decrypt(IdString(p.streamer), frame, out, DAVE_MEDIA_TYPE_VIDEO)) return;
+    }
+    if (videoFrames++ == 0) vlog("first picture, " + std::to_string(out.size()) + " bytes");
+    if (p.video) p.video(std::move(out));
+}
+
+void VoiceConnection::Impl::requestKeyFrame() {
+    static std::mutex keyMu;
+    std::lock_guard<std::mutex> keyLock(keyMu);
+    uint32_t media = videoSsrc;
+    auto t = Clock::now();
+    if (!media || t - lastKeyRequest < std::chrono::milliseconds(500)) return;
+    lastKeyRequest = t;
+    // RTCP picture loss indication (RFC 4585): the 8-byte header with our
+    // SSRC is authenticated, the media SSRC encrypted, as with RTP.
+    std::string head = {char(0x81), char(206), 0, 2};
+    head += char(ssrc >> 24);
+    head += char(ssrc >> 16);
+    head += char(ssrc >> 8);
+    head += char(ssrc);
+    uint8_t body[4] = {uint8_t(media >> 24), uint8_t(media >> 16), uint8_t(media >> 8), uint8_t(media)};
     uint8_t nonce[12] = {};
-    uint32_t c = sendNonce++;
-    nonce[0] = uint8_t(c >> 24);
-    nonce[1] = uint8_t(c >> 16);
-    nonce[2] = uint8_t(c >> 8);
-    nonce[3] = uint8_t(c);
     std::string sealed;
     {
         std::lock_guard<std::mutex> lock(aesMu);
+        uint32_t c = sendNonce++;
+        nonce[0] = uint8_t(c >> 24);
+        nonce[1] = uint8_t(c >> 16);
+        nonce[2] = uint8_t(c >> 8);
+        nonce[3] = uint8_t(c);
+        if (!aes.Ready() || !aes.Seal(nonce, head, body, 4, sealed)) return;
+    }
+    std::string pkt = head + sealed + std::string(reinterpret_cast<char*>(nonce), 4);
+    ::send(sock, pkt.data(), int(pkt.size()), 0);
+    vlog("asked for a key frame");
+}
+
+void VoiceConnection::Impl::sendOpus(const uint8_t* frame, size_t n) {
+    std::string header = RtpHeader(sendSeq++, sendTs, ssrc);
+    uint8_t nonce[12] = {};
+    std::string sealed;
+    {
+        std::lock_guard<std::mutex> lock(aesMu);
+        uint32_t c = sendNonce++;
+        nonce[0] = uint8_t(c >> 24);
+        nonce[1] = uint8_t(c >> 16);
+        nonce[2] = uint8_t(c >> 8);
+        nonce[3] = uint8_t(c);
         if (!aes.Ready() || !aes.Seal(nonce, header, frame, n, sealed)) return;
     }
     std::string pkt = header + sealed + std::string(reinterpret_cast<char*>(nonce), 4);
@@ -948,7 +1050,7 @@ void VoiceConnection::Impl::audioCallback(ma_device* d, void* out, const void*, 
 VoiceConnection::VoiceConnection(Params p, std::function<void()> wake) : impl_(std::make_unique<Impl>()) {
     impl_->p = std::move(p);
     impl_->wake = std::move(wake);
-    impl_->dave = std::make_unique<Dave>(impl_->p.userId, impl_->p.channelId);
+    impl_->dave = std::make_unique<Dave>(impl_->p.userId, impl_->p.group);
     Impl* i = impl_.get();
     impl_->dave->sendJson = [i](int op, const json& d) { i->sendJson(op, d); };
     impl_->dave->sendBinary = [i](int op, const std::string& b) { i->sendBinary(op, b); };
@@ -1025,6 +1127,13 @@ void VoiceConnection::PushMic(const float* samples, size_t n) {
 }
 
 bool VoiceConnection::Transmitting() const { return impl_->transmitting; }
+
+void VoiceConnection::RequestKeyFrame() { impl_->requestKeyFrame(); }
+
+std::string VoiceConnection::VideoCodec() const {
+    std::lock_guard<std::mutex> lock(impl_->mu);
+    return impl_->videoCodec;
+}
 void VoiceConnection::SetOutputVolume(float gain) { impl_->outputGain = gain; }
 
 }  // namespace disky

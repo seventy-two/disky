@@ -138,6 +138,7 @@ App::App(HWND hwnd, ID3D11Device* device, std::function<void()> wake)
 }
 
 App::~App() {
+    stopWatching();
     leaveVoice();
     if (mic_) mic_->Stop();
     if (keyHook_) UnhookWindowsHookEx(keyHook_);
@@ -230,6 +231,7 @@ void App::joinVoice(uint64_t guild, uint64_t channel) {
     if (voice_) dropVoice();
     voiceGuild_ = guild;
     voiceChannel_ = channel;
+    streamEnded_.clear();
     voiceSession_.clear();
     voiceToken_.clear();
     voiceEndpoint_.clear();
@@ -265,6 +267,8 @@ void App::connectVoice() {
     p.endpoint = voiceEndpoint_;
     p.userAgent = identity_.userAgent;
     p.output = config_.output;
+    p.serverId = voiceGuild_;
+    p.group = voiceChannel_;
     voice_ = std::make_unique<VoiceConnection>(p, wake_);
     voice_->SetDeafened(config_.deafened);
     applySending();
@@ -276,6 +280,7 @@ void App::connectVoice() {
 }
 
 void App::dropVoice() {
+    if (!streamKey_.empty()) stopWatching(false);
     {
         std::lock_guard<std::mutex> lock(micMu_);
         micSink_ = nullptr;
@@ -289,6 +294,56 @@ void App::dropVoice() {
         std::shared_ptr<VoiceConnection> old(voice_.release());
         fetcher_->Run([old]() mutable { old.reset(); });
     }
+}
+
+void App::watchStream(uint64_t guild, uint64_t channel, uint64_t user) {
+    std::string key = "guild:" + IdString(guild) + ":" + IdString(channel) + ":" + IdString(user);
+    streamShown_ = true;
+    if (key == streamKey_) return;
+    if (!streamKey_.empty()) stopWatching();
+    // Watching needs being in the channel, as in Discord's own app.
+    if (voiceChannel_ != channel) joinVoice(guild, channel);
+    streamKey_ = key;
+    streamUser_ = user;
+    streamEnded_.clear();
+    watchPending_ = true;
+}
+
+void App::connectStream() {
+    if (streamConn_ || streamKey_.empty() || !streamServer_ || streamToken_.empty() || streamEndpoint_.empty()) return;
+    decoder_ = std::make_shared<StreamDecoder>(device_, wake_);
+    VoiceConnection::Params p;
+    p.userId = store_.me;
+    p.guildId = voiceGuild_;
+    p.channelId = voiceChannel_;
+    p.sessionId = sessionId_;
+    p.token = streamToken_;
+    p.endpoint = streamEndpoint_;
+    p.userAgent = identity_.userAgent;
+    p.output = config_.output;
+    p.serverId = streamServer_;
+    p.group = streamServer_ - 1;  // as Discord's clients do for streams
+    p.stream = true;
+    p.streamer = streamUser_;
+    std::shared_ptr<StreamDecoder> dec = decoder_;
+    p.video = [dec](std::string frame) { dec->Push(std::move(frame)); };
+    streamConn_ = std::make_unique<VoiceConnection>(p, wake_);
+    streamConn_->SetDeafened(config_.deafened);
+}
+
+void App::stopWatching(bool tell) {
+    if (tell && !streamKey_.empty()) gateway_->Send(19, {{"stream_key", streamKey_}});
+    streamKey_.clear();
+    streamUser_ = streamServer_ = 0;
+    streamToken_.clear();
+    streamEndpoint_.clear();
+    watchPending_ = false;
+    streamFull_ = false;
+    if (streamConn_) {
+        std::shared_ptr<VoiceConnection> old(streamConn_.release());
+        fetcher_->Run([old]() mutable { old.reset(); });
+    }
+    decoder_.reset();
 }
 
 void App::applySending() {
@@ -357,6 +412,12 @@ void App::updateVoice() {
     } else if (!want && mic_->Running()) {
         mic_->Stop();
     }
+    // Ask to watch once the call's up.
+    if (watchPending_ && inCall) {
+        watchPending_ = false;
+        gateway_->Send(20, {{"stream_key", streamKey_}});
+    }
+    if (decoder_ && streamConn_ && decoder_->TakeFailed()) streamConn_->RequestKeyFrame();
     // The push-to-talk hooks, only while they could be needed.
     bool hook = bindingKey_ || (voiceChannel_ && config_.pushToTalk && config_.pttKey);
     if (hook && !keyHook_) {
@@ -518,6 +579,27 @@ void App::onDispatch(const Dispatch& d) {
             fetcher_->Run([old]() mutable { old.reset(); });
         }
         connectVoice();
+    }
+    if (d.type == "STREAM_CREATE" && d.data.value("stream_key", "") == streamKey_ && !streamKey_.empty()) {
+        streamServer_ = ParseId(d.data.value("rtc_server_id", json()));
+        connectStream();
+    }
+    if (d.type == "STREAM_SERVER_UPDATE" && d.data.value("stream_key", "") == streamKey_ && !streamKey_.empty()) {
+        streamToken_ = d.data.value("token", "");
+        streamEndpoint_ = d.data["endpoint"].is_string() ? d.data["endpoint"].get<std::string>() : "";
+        if (streamConn_) {
+            std::shared_ptr<VoiceConnection> old(streamConn_.release());
+            fetcher_->Run([old]() mutable { old.reset(); });
+        }
+        connectStream();
+    }
+    if (d.type == "STREAM_DELETE" && d.data.value("stream_key", "") == streamKey_ && !streamKey_.empty()) {
+        std::string why = d.data.value("reason", "");
+        std::string who = store_.DisplayName(voiceGuild_, streamUser_);
+        stopWatching(false);
+        streamEnded_ = why == "unauthorized" ? "You can't watch " + who + "'s stream."
+                       : why == "user_requested" ? ""
+                                                 : who + "'s stream has ended.";
     }
     auto effects = store_.Apply(d.type, d.data);
     if (d.type == "READY") {

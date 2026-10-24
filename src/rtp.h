@@ -18,7 +18,7 @@ constexpr int kFrameSamples = 960;  // 20ms, per channel
 // Rtp is a packet's header.
 struct Rtp {
     uint8_t payloadType = 0;
-    bool padding = false, extension = false;
+    bool padding = false, extension = false, marker = false;
     uint16_t seq = 0;
     uint32_t timestamp = 0, ssrc = 0;
     // header is what's sent in the clear but authenticated: the fixed

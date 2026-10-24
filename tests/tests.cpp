@@ -7,6 +7,7 @@
 
 #include "../src/commands.h"
 #include "../src/gif.h"
+#include "../src/h264.h"
 #include "../src/markdown.h"
 #include "../src/rtp.h"
 #include "../src/store.h"
@@ -256,6 +257,47 @@ static void testRtp() {
     CHECK_EQ(w.Arrived(65535), 0);
     CHECK_EQ(w.Arrived(0), 0);  // wraps
     CHECK_EQ(w.Arrived(2), 1);
+}
+
+static void testH264() {
+    H264Assembler a;
+    std::string out;
+    bool lost = false;
+    std::string sps = {0x67, 1, 2}, pps = {0x68, 3}, idr = {0x65, 9, 9, 9, 9};
+    // A key frame: SPS and PPS in a STAP-A, then the IDR slice in two FU-A pieces.
+    std::string stap = {0x78, 0, 3};
+    stap += sps;
+    stap += std::string{0, 2} + pps;
+    std::string fu1 = {0x7C, char(0x85), 9, 9}, fu2 = {0x7C, 0x45, 9, 9};
+    CHECK(!a.Packet(10, 3000, false, stap, &out, &lost));
+    CHECK(!a.Packet(12, 3000, true, fu2, &out, &lost));  // arrives early
+    CHECK(a.Packet(11, 3000, false, fu1, &out, &lost));
+    CHECK(!lost);
+    std::string s4 = {0, 0, 0, 1};
+    CHECK_EQ(out, s4 + sps + s4 + pps + s4 + idr);
+    CHECK(H264Assembler::KeyFrame(out));
+    // A delta frame in one packet.
+    std::string slice = {0x41, 7};
+    CHECK(a.Packet(13, 6000, true, slice, &out, &lost));
+    CHECK_EQ(out, s4 + slice);
+    CHECK(!H264Assembler::KeyFrame(out));
+    // Packet 14 is lost: the next frame says so, and deltas wait for a key frame.
+    CHECK(!a.Packet(15, 9000, true, slice, &out, &lost));
+    CHECK(lost);
+    CHECK(!a.Packet(16, 12000, true, slice, &out, &lost));
+    CHECK(!lost);
+    std::string single = {0x65, 1};
+    CHECK(a.Packet(17, 15000, true, single, &out, &lost));
+    CHECK_EQ(out, s4 + single);
+    // A frame left unfinished when the next starts is lost.
+    CHECK(!a.Packet(18, 18000, false, fu1, &out, &lost));
+    CHECK(!a.Packet(20, 21000, true, slice, &out, &lost));
+    CHECK(lost);
+    // Sequence numbers wrapping inside a frame.
+    H264Assembler w;
+    CHECK(!w.Packet(65535, 100, false, fu1, &out, &lost));
+    CHECK(w.Packet(0, 100, true, fu2, &out, &lost));
+    CHECK_EQ(out, s4 + idr);
 }
 
 static void testPermissions() {
@@ -661,6 +703,7 @@ int main() {
     testReady();
     testVoice();
     testRtp();
+    testH264();
     testPermissions();
     testMessages();
     testMentions();
