@@ -27,6 +27,11 @@ result is a single `disky.exe` with nothing to install.
 - **Messages**: Enter sends, Shift+Enter starts a new line. `@`, `:` and
   `#` suggest people, emoji and channels (Tab or Enter picks). Up in an empty
   box edits your last message; Escape cancels a reply or edit.
+- **Slash commands**: `/` lists the apps' commands for the server or DM (and
+  your own installed apps'). Pick one, then its options: Tab names one
+  (`location: Bristol`), and choices or the app's own suggestions show as you
+  type a value. A value with no name goes to the main option, so
+  `/weather Bristol` works. A bot's answer says who ran which command.
 - **Show or hide** the channel list and the member list with their icons
   in the title bar.
 - **Typing**: who else is typing shows under the box; disky tells Discord
@@ -55,7 +60,7 @@ and runs the tests. The portable parts (the store, the markdown parser and GIF f
 also build on Linux:
 
 ```sh
-g++ -std=c++17 -I src -I third_party tests/tests.cpp src/store.cpp src/markdown.cpp src/gif.cpp -o tests && ./tests
+g++ -std=c++17 -I src -I third_party tests/tests.cpp src/commands.cpp src/store.cpp src/markdown.cpp src/gif.cpp -o tests && ./tests
 ```
 
 `tools/genemoji.py` regenerates `src/emoji_data.inc` (the picker's emoji and

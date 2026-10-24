@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <string>
 
+#include "../src/commands.h"
 #include "../src/gif.h"
 #include "../src/markdown.h"
 #include "../src/store.h"
@@ -442,6 +443,94 @@ static void testGif() {
     CHECK(!IsGifUrl("gif"));
 }
 
+
+static void testCommands() {
+    json index = json::parse(R"({
+      "applications": [{"id": "10", "name": "Rosamund", "icon": "abc"}, {"id": "20", "name": "F1 Bot"}],
+      "application_commands": [
+        {"id": "1", "type": 1, "application_id": "10", "version": "5", "name": "weather", "description": "Weather",
+         "options": [{"type": 3, "name": "units", "description": "Units", "choices": [{"name": "Metric", "value": "mks"}, {"name": "Imperial", "value": "fps"}]},
+                     {"type": 3, "name": "location", "description": "Where"}]},
+        {"id": "2", "type": 1, "application_id": "10", "version": "5", "name": "wolfram", "description": "Ask",
+         "options": [{"type": 3, "name": "question", "required": true}, {"type": 4, "name": "num_solutions"}]},
+        {"id": "3", "type": 1, "application_id": "20", "version": "6", "name": "quote", "options": [{"type": 3, "name": "ticker", "required": true}]},
+        {"id": "4", "type": 1, "application_id": "10", "version": "7", "name": "quote", "options": [{"type": 3, "name": "stock", "required": true}]},
+        {"id": "5", "type": 1, "application_id": "10", "version": "8", "name": "admin",
+         "options": [{"type": 1, "name": "kick", "options": [{"type": 6, "name": "who", "required": true}, {"type": 5, "name": "loud"}]},
+                     {"type": 2, "name": "role", "options": [{"type": 1, "name": "give", "options": [{"type": 8, "name": "role", "required": true}]}]}]},
+        {"id": "6", "type": 4, "application_id": "20", "name": "launch"},
+        {"id": "7", "type": 1, "application_id": "20", "version": "9", "name": "remind", "options": [{"type": 3, "name": "reminder", "required": true, "autocomplete": true}]}
+      ]})");
+    CommandIndex ix;
+    ReadCommandIndex(index, ix);
+    CHECK_EQ(ix.commands.size(), size_t(7));  // admin kick and admin role give; no launch
+    CHECK_EQ(ix.apps[10].name, std::string("Rosamund"));
+
+    size_t rest = 0;
+    const Command* c = MatchCommand(ix.commands, "/weather", 0, &rest);
+    CHECK(c && c->path == "weather");
+    CHECK(!MatchCommand(ix.commands, "/weath", 0, &rest));
+    CHECK(!MatchCommand(ix.commands, "/weathers x", 0, &rest));
+    c = MatchCommand(ix.commands, "/admin role give role: <@&9>", 0, &rest);
+    CHECK(c && c->path == "admin role give");
+    CHECK_EQ(rest, size_t(16));
+    // Two apps' /quote: the one picked wins.
+    c = MatchCommand(ix.commands, "/quote NVDA", 4, &rest);
+    CHECK(c && c->id == Snowflake(4));
+
+    std::vector<std::pair<std::string, std::string>> values;
+    std::string err;
+    json out;
+    // A bare value goes to the main option.
+    const Command* w = MatchCommand(ix.commands, "/wolfram", 0, &rest);
+    CHECK(SplitOptions(*w, " what is 2+2 num_solutions: 3", &values, &err));
+    CHECK(OptionsJson(*w, values, {}, "", &out, &err));
+    CHECK_EQ(out.dump(), json::parse(R"([{"type":3,"name":"question","value":"what is 2+2"},{"type":4,"name":"num_solutions","value":3}])").dump());
+    CHECK(SplitOptions(*w, " NUM_SOLUTIONS: x question: hi", &values, &err));
+    CHECK(!OptionsJson(*w, values, {}, "", &out, &err));
+    CHECK_EQ(err, std::string("num_solutions needs a whole number."));
+    CHECK(SplitOptions(*w, " num_solutions: 2", &values, &err));
+    CHECK(!OptionsJson(*w, values, {}, "", &out, &err));
+    CHECK(err.find("needs question") != std::string::npos);
+
+    // Choices by name or value.
+    const Command* wx = MatchCommand(ix.commands, "/weather", 0, &rest);
+    CHECK(SplitOptions(*wx, " location: Bristol, UK units: imperial", &values, &err));
+    CHECK(OptionsJson(*wx, values, {}, "", &out, &err));
+    CHECK_EQ(out[0]["value"], json("Bristol, UK"));
+    CHECK_EQ(out[1]["value"], json("fps"));
+    CHECK(SplitOptions(*wx, " units: kelvin", &values, &err));
+    CHECK(!OptionsJson(*wx, values, {}, "", &out, &err));
+    CHECK_EQ(err, std::string("units has to be one of: Metric, Imperial."));
+
+    // Subcommands nest; mentions read as IDs.
+    const Command* kick = MatchCommand(ix.commands, "/admin kick", 0, &rest);
+    CHECK(SplitOptions(*kick, " who: <@!42> loud: yes", &values, &err));
+    CHECK(OptionsJson(*kick, values, {}, "", &out, &err));
+    CHECK_EQ(out.dump(), json::parse(R"([{"type":1,"name":"kick","options":[{"type":6,"name":"who","value":"42"},{"type":5,"name":"loud","value":true}]}])").dump());
+
+    // Where the cursor is.
+    std::string name;
+    size_t at = 0;
+    std::string typed = " location: Bris units: met";
+    CHECK(!OptionAt(*wx, typed, 0, &name, &at));
+    CHECK(OptionAt(*wx, typed, 15, &name, &at));
+    CHECK_EQ(name, std::string("location"));
+    CHECK_EQ(at, size_t(11));
+    CHECK(OptionAt(*wx, typed, typed.size(), &name, &at));
+    CHECK_EQ(name, std::string("units"));
+
+    // Autocomplete: the focused value goes as typed, and a picked
+    // suggestion sends its value.
+    const Command* rm = MatchCommand(ix.commands, "/remind", 0, &rest);
+    CHECK(SplitOptions(*rm, " reminder: bin", &values, &err));
+    CHECK(OptionsJson(*rm, values, {}, "reminder", &out, &err));
+    CHECK_EQ(out[0]["focused"], json(true));
+    CHECK(SplitOptions(*rm, " reminder: Bins out", &values, &err));
+    CHECK(OptionsJson(*rm, values, {{"reminder", {{"Bins out", json(17)}}}}, "", &out, &err));
+    CHECK_EQ(out[0]["value"], json(17));
+}
+
 int main() {
     testTime();
     testBase64AndProto();
@@ -453,6 +542,7 @@ int main() {
     testMarkdown();
     testEmoji();
     testGif();
+    testCommands();
     if (failures) {
         std::printf("%d failure(s)\n", failures);
         return 1;

@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "commands.h"
 #include "config.h"
 #include "discord.h"
 #include "images.h"
@@ -70,6 +71,14 @@ private:
     void sendMessage(uint64_t channel, std::string content, uint64_t replyTo, std::vector<Api::File> files,
                      const std::string& nonce);
     void saveEdit();
+    // Slash commands: the open channel's (null until they've loaded, which
+    // loadCommands starts), the one the draft starts with, and running it.
+    const CommandIndex* commandsHere();
+    void loadCommands();
+    const Command* typedCommand(size_t* rest);
+    void runCommand(const Command& c, size_t rest);
+    json interaction(int type, const Command& c, const json& options, const std::string& nonce) const;
+    void requestAutocomplete(const Command& c, const std::string& options, const std::string& option);
     void deleteMessage(uint64_t channel, uint64_t id);
     void react(uint64_t channel, uint64_t id, const Emoji& e, bool add);
     void attachFile(const std::wstring& path);
@@ -242,9 +251,18 @@ private:
     struct Suggestion {
         std::string label, insert, code, image;
         ImU32 colour = 0;
+        std::string detail;  // muted, after the label
+        int start = -1;      // where the insert starts, if not the word's start
+        Snowflake command = 0;
+        std::string option;  // a value for this command option,
+        json value;          // sent as this
     };
     std::vector<Suggestion> suggestions_;
     void suggest();
+    // suggestCommands fills suggestions for a draft starting with "/"; false
+    // leaves it to the usual ones (mentions in a user option).
+    bool suggestCommands();
+    bool passiveSuggestions_ = false;  // Tab picks, but Enter still sends
     void pick(const Suggestion& s);
     int suggestion_ = 0;
     int tokenStart_ = -1, tokenEnd_ = -1;  // the word being completed
@@ -253,6 +271,21 @@ private:
     std::string pendingInsert_;
     int pendingStart_ = -1, pendingEnd_ = -1;
     static int composerCallback(ImGuiInputTextCallbackData* data);
+
+    // Slash commands, by guild (or DM channel), with the user's own apps'.
+    std::string sessionId_;  // the gateway's, which interactions name
+    std::map<uint64_t, CommandIndex> commandIndex_;
+    std::set<uint64_t> commandsLoading_;
+    Snowflake commandPick_ = 0;  // the command picked, where two share a name
+    std::map<std::string, std::map<std::string, json>> commandPicked_;  // option → shown → value
+    std::map<std::string, std::string> commandNonces_;                  // sent, by nonce → "/path"
+    std::string commandStatus_;
+    double commandSentAt_ = 0;
+    // Autocomplete: what's typed (and since when), what was last asked,
+    // and the answer, for the option it was for.
+    std::string acTyped_, acAsked_, acNonce_, acPendingFor_, acFor_;
+    double acTypedAt_ = 0;
+    std::vector<CommandChoice> acChoices_;
 
     // Emoji picker: for a reaction (message set) or the composer.
     bool pickerOpen_ = false;

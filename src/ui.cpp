@@ -43,7 +43,8 @@ ImU32 statusColour(const std::string& s) {
 
 bool App::Busy() const {
     auto playing = [](const std::unique_ptr<VideoPlayer>& v) { return v && v->Active() && !v->Paused() && !v->Ended(); };
-    return playing(video_) || playing(gif_) || (images_ && images_->Animating());
+    // An autocomplete waiting for typing to pause needs the frame that asks.
+    return playing(video_) || playing(gif_) || (images_ && images_->Animating()) || acAsked_ != acTyped_;
 }
 
 bool App::InCaption(float x, float y) const {

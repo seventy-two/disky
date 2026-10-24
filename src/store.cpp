@@ -422,6 +422,7 @@ Message Store::ParseMessage(const json& j) {
     if (!m.guildId)
         if (auto c = channels.find(m.channelId); c != channels.end()) m.guildId = c->second.guildId;
     m.type = num(j, "type");
+    m.flags = num(j, "flags");
     m.content = str(j, "content");
     m.timestamp = ParseTime(str(j, "timestamp"));
     m.edited = ParseTime(str(j, "edited_timestamp"));
@@ -682,6 +683,7 @@ std::vector<Effect> Store::Apply(const std::string& type, const json& d) {
             if (d.contains("mention_roles")) old->mentionRoles = m.mentionRoles;
             if (d.contains("mention_everyone")) old->mentionEveryone = m.mentionEveryone;
             if (d.contains("reactions")) old->reactions = m.reactions;
+            if (d.contains("flags")) old->flags = m.flags;
         }
     } else if (type == "MESSAGE_DELETE") {
         RemoveMessage(id(d, "channel_id"), id(d, "id"));

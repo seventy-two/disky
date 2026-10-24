@@ -211,6 +211,8 @@ void App::signOut() {
     listFor_.clear();
     listRanges_.clear();
     drafts_.clear();
+    commandIndex_.clear();
+    commandsLoading_.clear();
     remote_ = std::make_unique<RemoteAuth>(identity_, wake_);
     remote_->Start();
 }
@@ -309,9 +311,28 @@ void App::onDispatch(const Dispatch& d) {
     if (d.type == "MESSAGE_CREATE")
         if (auto t = typing_.find(ParseId(d.data["channel_id"])); t != typing_.end())
             t->second.erase(ParseId(d.data["author"]["id"]));
+    if (d.type == "APPLICATION_COMMAND_AUTOCOMPLETE_RESPONSE") {
+        if (d.data.value("nonce", "") == acNonce_) {
+            acChoices_.clear();
+            for (const auto& ch : d.data.value("choices", json::array()))
+                acChoices_.push_back({ch.value("name", ""), ch.value("value", json())});
+            acFor_ = acPendingFor_;
+        }
+        return;
+    }
+    if (d.type == "INTERACTION_SUCCESS" || d.type == "INTERACTION_FAILURE") {
+        auto it = commandNonces_.find(d.data.value("nonce", ""));
+        if (it == commandNonces_.end()) return;
+        if (d.type == "INTERACTION_FAILURE") composeError_ = it->second + " didn't work: the app didn't respond.";
+        commandNonces_.erase(it);
+        if (commandNonces_.empty()) commandStatus_.clear();
+        return;
+    }
     auto effects = store_.Apply(d.type, d.data);
     if (d.type == "READY") {
         ready_ = true;
+        sessionId_ = d.data.value("session_id", "");
+        commandIndex_.clear();
         status_.clear();
         listFor_.clear();
         listRanges_.clear();
@@ -372,6 +393,8 @@ void App::seeNotices(uint64_t channel) {
 
 void App::open(uint64_t guild, uint64_t channel) {
     if (channel_) drafts_[channel_] = draft_.data();
+    commandPicked_.clear();
+    commandPick_ = 0;
     if (guild && !channel) {
         channel = lastChannel_.count(guild) ? lastChannel_[guild] : 0;
         if (!store_.channels.count(channel) || !store_.CanView(channel)) channel = 0;
@@ -575,6 +598,11 @@ void App::send() {
         saveEdit();
         return;
     }
+    size_t rest = 0;
+    if (const Command* c = typedCommand(&rest)) {
+        runCommand(*c, rest);
+        return;
+    }
     if (text.empty() && files_.empty()) return;
     if (!canSend(channel_)) return;
     std::string content = encodeMentions(text);
@@ -649,6 +677,113 @@ void App::sendMessage(uint64_t channel, std::string content, uint64_t replyTo, s
             if (channel == channel_) composeError_ = "Couldn't send: " + why;
         });
     });
+}
+
+const CommandIndex* App::commandsHere() {
+    auto it = commandIndex_.find(guild_ ? guild_ : channel_);
+    return it == commandIndex_.end() ? nullptr : &it->second;
+}
+
+void App::loadCommands() {
+    uint64_t key = guild_ ? guild_ : channel_;
+    if (!key || !api_ || commandIndex_.count(key) || commandsLoading_.count(key)) return;
+    commandsLoading_.insert(key);
+    int gen = generation_;
+    Api* api = api_.get();
+    std::string path = guild_ ? "/guilds/" + IdString(guild_) + "/application-command-index"
+                              : "/channels/" + IdString(channel_) + "/application-command-index";
+    fetcher_->Run([this, api, path, key, gen] {
+        // The server's (or DM's) apps, then the user's own.
+        CommandIndex ix;
+        for (const std::string& p : {path, std::string("/users/@me/application-command-index")}) {
+            HttpResult r = api->Call("GET", p);
+            json j = json::parse(r.body, nullptr, false);
+            if (r.ok() && j.is_object()) ReadCommandIndex(j, ix);
+        }
+        post([this, ix = std::move(ix), key, gen]() mutable {
+            if (gen != generation_) return;
+            commandsLoading_.erase(key);
+            commandIndex_[key] = std::move(ix);
+        });
+    });
+}
+
+const Command* App::typedCommand(size_t* rest) {
+    if (draft_[0] != '/' || editing_) return nullptr;
+    const CommandIndex* ix = commandsHere();
+    return ix ? MatchCommand(ix->commands, draft_.data(), commandPick_, rest) : nullptr;
+}
+
+json App::interaction(int type, const Command& c, const json& options, const std::string& nonce) const {
+    json data = {{"version", c.version},      {"id", IdString(c.id)},          {"name", c.parts[0]},
+                 {"type", 1},                 {"options", options},            {"application_command", c.raw},
+                 {"attachments", json::array()}};
+    json p = {{"type", type},
+              {"application_id", IdString(c.applicationId)},
+              {"channel_id", IdString(channel_)},
+              {"session_id", sessionId_},
+              {"data", data},
+              {"nonce", nonce}};
+    if (guild_) p["guild_id"] = IdString(guild_);
+    if (type == 2) p["analytics_location"] = "slash_ui";
+    return p;
+}
+
+void App::runCommand(const Command& c, size_t rest) {
+    std::string typed = draft_.data();
+    std::vector<std::pair<std::string, std::string>> values;
+    std::string error;
+    json options;
+    // Mentions picked from suggestions become <@id>, which options read.
+    if (!SplitOptions(c, encodeMentions(typed.substr(rest)), &values, &error) ||
+        !OptionsJson(c, values, commandPicked_, "", &options, &error)) {
+        composeError_ = error;
+        return;
+    }
+    std::string nonce = NewNonce(), path = "/" + c.path;
+    json payload = interaction(2, c, options, nonce);
+    commandNonces_[nonce] = path;
+    commandStatus_ = "Sending " + path + "…";
+    commandSentAt_ = now_;
+    composeError_.clear();
+    std::fill(draft_.begin(), draft_.end(), 0);
+    drafts_.erase(channel_);
+    mentionCodes_.clear();
+    commandPicked_.clear();
+    commandPick_ = 0;
+    atBottom_ = true;
+    int gen = generation_;
+    Api* api = api_.get();
+    uint64_t channel = channel_;
+    sender_->Run([this, api, payload, nonce, path, channel, gen] {
+        // Discord's app sends interactions as a form, files or not.
+        HttpResult r = api->Upload("/interactions", payload, {});
+        if (r.ok()) return;  // INTERACTION_SUCCESS or _FAILURE follows
+        std::string why = r.error;
+        json body = json::parse(r.body, nullptr, false);
+        if (body.is_object() && body.contains("message")) why = body["message"].get<std::string>();
+        post([this, nonce, path, why, channel, gen] {
+            if (gen != generation_) return;
+            commandNonces_.erase(nonce);
+            commandStatus_.clear();
+            if (channel == channel_) composeError_ = "Couldn't run " + path + ": " + why;
+        });
+    });
+}
+
+void App::requestAutocomplete(const Command& c, const std::string& typed, const std::string& option) {
+    std::vector<std::pair<std::string, std::string>> values;
+    std::string error;
+    json options;
+    if (!SplitOptions(c, typed, &values, &error)) return;
+    // The option being completed goes even before anything's typed in it.
+    if (std::none_of(values.begin(), values.end(), [&](const auto& v) { return v.first == option; })) values.push_back({option, ""});
+    if (!OptionsJson(c, values, commandPicked_, option, &options, &error)) return;
+    acNonce_ = NewNonce();
+    acPendingFor_ = IdString(c.id) + " " + c.path + " " + option;
+    json payload = interaction(4, c, options, acNonce_);
+    Api* api = api_.get();
+    fetcher_->Run([api, payload] { api->Upload("/interactions", payload, {}); });
 }
 
 void App::saveEdit() {

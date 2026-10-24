@@ -389,7 +389,11 @@ void App::message(const Message& m, bool groupStart, bool alt, float w, float h)
         rx += ImGui::CalcTextSize("used").x + 6 * scale_;
         // Slash commands get their slash; context menu ones (type 23) don't.
         std::string cmd = (m.type == 23 ? "" : "/") + m.command->name;
-        if (!m.command->name.empty()) dl->AddText(ImVec2(rx, ry), U32(c.link), cmd.c_str());
+        if (!m.command->name.empty()) {
+            dl->AddText(ImVec2(rx, ry), U32(c.link), cmd.c_str());
+            rx += ImGui::CalcTextSize(cmd.c_str()).x + 6 * scale_;
+        }
+        if (m.flags & 64) dl->AddText(ImVec2(rx, ry), U32(c.muted), "·  only you can see this");
         ImGui::PopFont();
         y += 20 * scale_;
     }
@@ -472,6 +476,13 @@ void App::message(const Message& m, bool groupStart, bool alt, float w, float h)
         dl->AddText(ImVec2(o.x + left, textY), U32(c.muted), line.c_str());
         ImGui::PopFont();
         return;
+    }
+
+    // A command's answer the app's still working on.
+    if (m.content.empty() && m.embeds.empty() && (m.flags & 128)) {
+        ImGui::PushFont(fonts_.italic, kBody);
+        dl->AddText(ImVec2(o.x + left, textY), U32(c.muted), (author + " is thinking…").c_str());
+        ImGui::PopFont();
     }
 
     // Content.
@@ -1028,8 +1039,125 @@ int App::composerCallback(ImGuiInputTextCallbackData* d) {
     return 0;
 }
 
+bool App::suggestCommands() {
+    std::string text = draft_.data();
+    size_t cursor = size_t(std::max(tokenEnd_, 0));
+    if (cursor < 1 || editing_ || text.find('\n') != std::string::npos) return false;
+    loadCommands();
+    const CommandIndex* ix = commandsHere();
+    if (!ix || tokenStart_ == dismissedToken_) return true;
+    auto lower = [](std::string s) {
+        std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+        return s;
+    };
+    const size_t kMax = 10;
+    size_t rest = 0;
+    const Command* c = MatchCommand(ix->commands, text, commandPick_, &rest);
+    if (!c || cursor <= rest) {
+        // Naming the command: the ones starting with what's typed, then
+        // the ones containing it.
+        std::string q = lower(text.substr(1, cursor - 1));
+        for (int pass = 0; pass < 2; pass++)
+            for (const auto& cmd : ix->commands) {
+                if (suggestions_.size() >= kMax) break;
+                size_t at = cmd.path.find(q);
+                if (pass == 0 ? at != 0 : (at == 0 || at == std::string::npos)) continue;
+                Suggestion sg;
+                sg.label = "/" + cmd.path;
+                sg.insert = sg.label;
+                sg.start = 0;
+                sg.command = cmd.id;
+                auto app = ix->apps.find(cmd.applicationId);
+                sg.detail = cmd.description;
+                if (app != ix->apps.end()) {
+                    sg.detail += (sg.detail.empty() ? "" : "  ·  ") + app->second.name;
+                    if (!app->second.icon.empty())
+                        sg.image = "https://cdn.discordapp.com/app-icons/" + IdString(app->first) + "/" + app->second.icon + ".png?size=48";
+                }
+                suggestions_.push_back(std::move(sg));
+            }
+        return true;
+    }
+
+    // Its options: values for the one being written, then names to start one.
+    std::string opts = text.substr(rest);
+    size_t cur = cursor - rest;
+    std::string name;
+    size_t valueStart = 0;
+    bool marked = OptionAt(*c, opts, cur, &name, &valueStart);
+    if (!marked && !c->options.empty()) {
+        // Before any "name:", what's written is the main option's, as
+        // SplitOptions reads it.
+        name = c->options[0].name;
+        valueStart = std::min(opts.find_first_not_of(' '), cur);
+    }
+    const CommandOption* o = nullptr;
+    for (const auto& x : c->options)
+        if (x.name == name) o = &x;
+    bool mentions = false;
+    if (o) {
+        std::string value = opts.substr(valueStart, cur - valueStart);
+        auto offer = [&](const std::vector<CommandChoice>& choices, bool filter) {
+            for (const auto& ch : choices) {
+                if (suggestions_.size() >= kMax) break;
+                if (filter && lower(ch.name).find(lower(value)) == std::string::npos) continue;
+                Suggestion sg;
+                sg.label = ch.name;
+                sg.insert = ch.name;
+                sg.start = int(rest + valueStart);
+                sg.option = o->name;
+                sg.value = ch.value;
+                suggestions_.push_back(std::move(sg));
+            }
+        };
+        if (!o->choices.empty()) {
+            offer(o->choices, true);
+        } else if (o->autocomplete) {
+            // Ask the app once typing pauses; its answer is already filtered.
+            std::string key = IdString(c->id) + " " + c->path + " " + o->name;
+            if (acTyped_ != key + "\n" + value) {
+                acTyped_ = key + "\n" + value;
+                acTypedAt_ = now_;
+            }
+            if (acAsked_ != acTyped_ && now_ - acTypedAt_ > 0.3) {
+                acAsked_ = acTyped_;
+                requestAutocomplete(*c, opts, o->name);
+            }
+            if (acFor_ == key) offer(acChoices_, false);
+        } else {
+            mentions = o->type == opt::User || o->type == opt::Channel || o->type == opt::Role || o->type == opt::Mentionable;
+        }
+    }
+    size_t values = suggestions_.size();
+
+    // Names, where one could start: anywhere but a named value's first word.
+    std::string word = lower(tokenText_);
+    bool firstWord = size_t(tokenStart_) <= rest + valueStart;
+    if (word.find(':') == std::string::npos && (!marked || (!firstWord && !word.empty())))
+        for (const auto& op : c->options) {
+            // Named already ("name:"); a bare word could still be the start of one.
+            std::string lo = " " + lower(opts), mark = lower(op.name) + ":";
+            bool used = lo.find(" " + mark) != std::string::npos || lo.find("\n" + mark) != std::string::npos;
+            if (used || op.name.rfind(word, 0) != 0 || suggestions_.size() >= kMax) continue;
+            Suggestion sg;
+            sg.label = op.name;
+            sg.insert = op.name + ":";
+            sg.detail = op.description + (op.required ? "  (required)" : "");
+            suggestions_.push_back(std::move(sg));
+        }
+    // Naming an option is Tab's, so Enter can send what's written.
+    passiveSuggestions_ = values == 0 && !suggestions_.empty();
+    if (suggestions_.empty() && mentions) return false;  // @ and # suggest as usual
+    return true;
+}
+
 void App::suggest() {
     suggestions_.clear();
+    passiveSuggestions_ = false;
+    if (draft_[0] == '/' && suggestCommands()) {
+        if (suggestion_ >= int(suggestions_.size())) suggestion_ = 0;
+        return;
+    }
     if (tokenText_.size() < 2 && !(tokenText_ == "@")) return;
     if (tokenStart_ == dismissedToken_) return;
     char kind = tokenText_[0];
@@ -1098,8 +1226,10 @@ void App::suggest() {
 
 void App::pick(const Suggestion& s) {
     pendingInsert_ = s.insert + " ";
-    pendingStart_ = tokenStart_;
+    pendingStart_ = s.start >= 0 ? s.start : tokenStart_;
     pendingEnd_ = tokenEnd_;
+    if (s.command) commandPick_ = s.command;
+    if (!s.option.empty()) commandPicked_[s.option][s.insert] = s.value;
     if (!s.code.empty() && s.code != s.insert) mentionCodes_[s.insert] = s.code;
     suggestions_.clear();
 }
@@ -1113,6 +1243,7 @@ void App::autocomplete(ImVec2 above, float w) {
     ImGui::SetNextWindowPos(a);
     ImGui::SetNextWindowSize(ImVec2(w, h));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad, pad));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));  // rows exactly row apart
     ImGui::PushStyleColor(ImGuiCol_WindowBg, c.sidebar);
     ImGui::Begin("##suggest", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav |
@@ -1135,12 +1266,19 @@ void App::autocomplete(ImVec2 above, float w) {
             }
             tx += img + 10 * scale_;
         }
-        dl->AddText(ImVec2(tx, ra.y + (row - ImGui::GetFontSize()) / 2), s.colour ? s.colour : U32(c.text), s.label.c_str());
+        float ty = ra.y + (row - ImGui::GetFontSize()) / 2;
+        dl->AddText(ImVec2(tx, ty), s.colour ? s.colour : U32(c.text), s.label.c_str());
+        if (!s.detail.empty()) {
+            float dx = tx + ImGui::CalcTextSize(s.label.c_str()).x + 14 * scale_;
+            ImGui::PushClipRect(ImVec2(dx, ra.y), ImVec2(rb.x - 8 * scale_, rb.y), true);
+            dl->AddText(ImVec2(dx, ty), U32(c.muted), s.detail.c_str());
+            ImGui::PopClipRect();
+        }
         if (clicked) pick(s);
     }
     ImGui::End();
     ImGui::PopStyleColor();
-    ImGui::PopStyleVar();
+    ImGui::PopStyleVar(2);
 }
 
 void App::composer(float x, float y, float w, float* height) {
@@ -1217,6 +1355,35 @@ void App::composer(float x, float y, float w, float* height) {
         ImGui::PopFont();
         used += fh + 6 * scale_;
     }
+    // The command being written: its options (optional ones bracketed),
+    // and what the one at the cursor is for.
+    size_t cmdRest = 0;
+    if (const Command* cmd = typedCommand(&cmdRest)) {
+        std::string line = "/" + cmd->path, about = cmd->description, name;
+        size_t vs = 0;
+        std::string typed = draft_.data();
+        bool inOption = tokenEnd_ >= int(cmdRest) &&
+                        OptionAt(*cmd, typed.substr(cmdRest), size_t(tokenEnd_) - cmdRest, &name, &vs);
+        for (const auto& o : cmd->options) {
+            line += "   " + std::string(o.required ? "" : "[") + o.name + (o.required ? "" : "]");
+            if (inOption && o.name == name) about = o.name + ": " + o.description;
+        }
+        if (!about.empty()) line += "   —   " + about;
+        bool cancel = false;
+        bar(line, &cancel);
+        if (cancel) {
+            std::fill(draft_.begin(), draft_.end(), 0);
+            commandPicked_.clear();
+            focusComposer_ = true;
+        }
+    }
+    if (!commandStatus_.empty() && now_ - commandSentAt_ > 20) commandStatus_.clear();
+    if (!commandStatus_.empty()) {
+        ImGui::PushFont(fonts_.regular, 13);
+        dl->AddText(ImVec2(boxX + 4 * scale_, top + used + 2 * scale_), U32(c.muted), commandStatus_.c_str());
+        ImGui::PopFont();
+        used += 22 * scale_;
+    }
     if (!composeError_.empty()) {
         ImGui::PushFont(fonts_.regular, 13);
         dl->AddText(ImVec2(boxX + 4 * scale_, top + used + 2 * scale_), U32(c.bad), composeError_.c_str());
@@ -1276,13 +1443,15 @@ void App::composer(float x, float y, float w, float* height) {
     if (active && !suggestions_.empty()) {
         if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) suggestion_ = (suggestion_ + 1) % int(suggestions_.size());
         if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) suggestion_ = (suggestion_ + int(suggestions_.size()) - 1) % int(suggestions_.size());
-        bool choose = ImGui::IsKeyPressed(ImGuiKey_Tab) || ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter);
+        bool choose = ImGui::IsKeyPressed(ImGuiKey_Tab) ||
+                      (!passiveSuggestions_ && (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)));
         if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
             dismissedToken_ = tokenStart_;
             suggestions_.clear();
         }
         for (ImGuiKey k : {ImGuiKey_DownArrow, ImGuiKey_UpArrow, ImGuiKey_Tab, ImGuiKey_Enter, ImGuiKey_KeypadEnter, ImGuiKey_Escape})
-            ImGui::SetKeyOwner(k, ImGui::GetID("suggest"), ImGuiInputFlags_LockThisFrame);
+            if (!passiveSuggestions_ || (k != ImGuiKey_Enter && k != ImGuiKey_KeypadEnter))
+                ImGui::SetKeyOwner(k, ImGui::GetID("suggest"), ImGuiInputFlags_LockThisFrame);
         if (choose && !suggestions_.empty()) pick(suggestions_[suggestion_]);
     } else if (active) {
         if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
@@ -1313,7 +1482,7 @@ void App::composer(float x, float y, float w, float* height) {
             (IsClipboardFormatAvailable(CF_HDROP) || !IsClipboardFormatAvailable(CF_UNICODETEXT)) && pasteImage())
             ImGui::SetKeyOwner(ImGuiKey_V, ImGui::GetID("paste"), ImGuiInputFlags_LockThisFrame);
     }
-    if (!suggestions_.empty() && active) autocomplete(ImVec2(a.x, a.y), boxW);
+    if (!suggestions_.empty() && active) autocomplete(ImVec2(a.x, top), boxW);  // above the bars too
 
     // Type anywhere to write.
     if (!active && !ImGui::IsAnyItemActive() && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId) &&

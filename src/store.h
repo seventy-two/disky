@@ -147,6 +147,7 @@ struct Reaction {
 struct Message {
     Snowflake id = 0, channelId = 0, guildId = 0, authorId = 0;
     int type = 0;
+    int flags = 0;  // 64 only the reader sees it, 128 its app's still answering
     std::string content;
     int64_t timestamp = 0, edited = 0;  // Unix ms; edited is 0 if never
     std::vector<Attachment> attachments;
