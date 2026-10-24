@@ -213,6 +213,19 @@ static void testMessages() {
 
     s.Apply("MESSAGE_DELETE", {{"id", "690"}, {"channel_id", "201"}});
     CHECK_EQ(s.messages[201].list.size(), size_t(3));
+
+    // A bot's answer to a slash command keeps who ran it and what.
+    json answer = message("730", "201", "9", "42");
+    answer["type"] = 20;
+    answer["interaction_metadata"] = {{"id", "1"}, {"type", 2}, {"user", {{"id", "2"}, {"username", "u2"}}}};
+    answer["interaction"] = {{"id", "1"}, {"type", 2}, {"name", "weather today"}, {"user", {{"id", "2"}, {"username", "u2"}}}};
+    Message cm = s.ParseMessage(answer);
+    CHECK(cm.command.has_value());
+    if (cm.command) {
+        CHECK_EQ(cm.command->userId, Snowflake(2));
+        CHECK_EQ(cm.command->name, std::string("weather today"));
+    }
+    CHECK(!s.ParseMessage(message("731", "201", "2", "plain")).command.has_value());
 }
 
 static void testMentions() {

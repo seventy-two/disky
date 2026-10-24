@@ -191,7 +191,7 @@ void App::channelHeader(float left, float right) {
 float App::messageHeight(const Message& m, bool groupStart, float w) {
     float contentW = w - (32 + kNames + 12) * scale_;
     float h = (groupStart ? 4 : 0) * scale_;
-    if (m.reply) h += 20 * scale_;
+    if (m.reply || m.command) h += 20 * scale_;
     float line = kBody * 1.3f * scale_;
     if (!normalType(m.type)) return h + line + 2 * scale_;
     float body = 0;
@@ -240,7 +240,7 @@ void App::messages(float w, float h) {
     for (const auto& m : ms.list) {
         bool day = !prev || !sameDay(prev->timestamp, m.timestamp);
         bool gs = !prev || day || prev->authorId != m.authorId || m.timestamp - prev->timestamp > kGroupGap ||
-                  m.reply.has_value() || !normalType(m.type) || !normalType(prev->type);
+                  m.reply.has_value() || m.command.has_value() || !normalType(m.type) || !normalType(prev->type);
         if (day) y += 24 * scale_;
         // Each author's run of messages takes the other background from
         // the one before, so it's easy to see where one ends.
@@ -372,6 +372,27 @@ void App::message(const Message& m, bool groupStart, bool alt, float w, float h)
     }
     if (mentioned) dl->AddRectFilled(ImVec2(o.x, rowTop), ImVec2(o.x + 2 * scale_, o.y + h), U32(c.mentionBar));
     std::string author = store_.DisplayName(m.guildId, m.authorId);
+
+    // Who ran the command this answers, in a line above.
+    if (m.command && !m.reply) {
+        ImGui::PushFont(fonts_.regular, 13);
+        float rx = o.x + left, ry = y + 2 * scale_;
+        dl->AddText(ImVec2(rx, ry), U32(c.muted), "\xE2\x86\xB1");  // ↱
+        rx += 16 * scale_;
+        std::string name = "@" + store_.DisplayName(m.guildId, m.command->userId);
+        ImGui::PushFont(fonts_.semibold, 13);
+        rx += Label(dl, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(rx, ry), userColour(m.guildId, m.command->userId), name, 0,
+                    [this](const std::string& u) { return texture(u); }) +
+              6 * scale_;
+        ImGui::PopFont();
+        dl->AddText(ImVec2(rx, ry), U32(c.muted), "used");
+        rx += ImGui::CalcTextSize("used").x + 6 * scale_;
+        // Slash commands get their slash; context menu ones (type 23) don't.
+        std::string cmd = (m.type == 23 ? "" : "/") + m.command->name;
+        if (!m.command->name.empty()) dl->AddText(ImVec2(rx, ry), U32(c.link), cmd.c_str());
+        ImGui::PopFont();
+        y += 20 * scale_;
+    }
 
     // The reply's original, in a line above.
     if (m.reply) {

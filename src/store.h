@@ -169,6 +169,13 @@ struct Message {
         bool deleted = false;
     };
     std::optional<Reply> reply;
+    // The command a bot's message answers: who ran it and its name, with
+    // subcommands. Discord doesn't send the options they typed.
+    struct Command {
+        Snowflake userId = 0;
+        std::string name;
+    };
+    std::optional<Command> command;
     // A message we've sent that the server hasn't confirmed: nonce is
     // what matches the two up.
     std::string nonce;

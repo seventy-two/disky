@@ -509,6 +509,19 @@ Message Store::ParseMessage(const json& j) {
         }
         m.reply = r;
     }
+    // interaction_metadata replaced interaction, but only the old one is
+    // sure to carry the command's name.
+    for (const char* key : {"interaction_metadata", "interaction"}) {
+        auto in = j.find(key);
+        if (in == j.end() || !in->is_object()) continue;
+        Message::Command c = m.command.value_or(Message::Command{});
+        if (auto u = in->find("user"); u != in->end() && u->is_object() && !c.userId) {
+            readUser(*u);
+            c.userId = id(*u, "id");
+        }
+        if (c.name.empty()) c.name = str(*in, "name");
+        if (c.userId) m.command = c;
+    }
     return m;
 }
 
@@ -1051,6 +1064,7 @@ std::vector<Snowflake> Store::MissingMembers(Snowflake channelId) const {
         if (const User* u = FindUser(m.authorId); u && u->bot && m.type != 0 && m.type != 19) continue;
         want(m.authorId);
         if (m.reply) want(m.reply->authorId);
+        if (m.command) want(m.command->userId);
         for (Snowflake u : m.mentions) want(u);
     }
     return out;
