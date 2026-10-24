@@ -15,6 +15,8 @@ using Microsoft::WRL::ComPtr;
 
 namespace disky {
 
+static App* hookApp = nullptr;  // the push-to-talk hooks are global, so they find the app here
+
 namespace {
 
 // The web app's build number when this was written, until a newer one
@@ -137,6 +139,10 @@ App::App(HWND hwnd, ID3D11Device* device, std::function<void()> wake)
 
 App::~App() {
     leaveVoice();
+    if (mic_) mic_->Stop();
+    if (keyHook_) UnhookWindowsHookEx(keyHook_);
+    if (mouseHook_) UnhookWindowsHookEx(mouseHook_);
+    hookApp = nullptr;
     SaveConfig(config_);
     if (gateway_) gateway_->Stop();
     if (remote_) remote_->Stop();
@@ -232,15 +238,18 @@ void App::joinVoice(uint64_t guild, uint64_t channel) {
 
 void App::leaveVoice() {
     if (!voiceChannel_) return;
-    gateway_->Send(4, {{"guild_id", IdString(voiceGuild_)}, {"channel_id", nullptr}, {"self_mute", true}, {"self_deaf", config_.deafened}});
+    gateway_->Send(4, {{"guild_id", IdString(voiceGuild_)},
+                       {"channel_id", nullptr},
+                       {"self_mute", config_.micMuted || config_.deafened},
+                       {"self_deaf", config_.deafened}});
     dropVoice();
 }
 
 void App::sendVoiceState() {
-    // Listening only, so always muted.
+    // Deafened mutes too, as Discord does.
     gateway_->Send(4, {{"guild_id", IdString(voiceGuild_)},
                        {"channel_id", IdString(voiceChannel_)},
-                       {"self_mute", true},
+                       {"self_mute", config_.micMuted || config_.deafened},
                        {"self_deaf", config_.deafened},
                        {"self_video", false}});
 }
@@ -255,12 +264,22 @@ void App::connectVoice() {
     p.token = voiceToken_;
     p.endpoint = voiceEndpoint_;
     p.userAgent = identity_.userAgent;
+    p.output = config_.output;
     voice_ = std::make_unique<VoiceConnection>(p, wake_);
     voice_->SetDeafened(config_.deafened);
+    applySending();
+    {
+        std::lock_guard<std::mutex> lock(micMu_);
+        micSink_ = voice_.get();
+    }
     for (const auto& [id, v] : config_.voiceVolumes) voice_->SetVolume(std::strtoull(id.c_str(), nullptr, 10), v);
 }
 
 void App::dropVoice() {
+    {
+        std::lock_guard<std::mutex> lock(micMu_);
+        micSink_ = nullptr;
+    }
     voiceChannel_ = voiceGuild_ = 0;
     voiceSession_.clear();
     voiceToken_.clear();
@@ -269,6 +288,86 @@ void App::dropVoice() {
     if (voice_) {
         std::shared_ptr<VoiceConnection> old(voice_.release());
         fetcher_->Run([old]() mutable { old.reset(); });
+    }
+}
+
+void App::applySending() {
+    if (!voice_) return;
+    auto mode = config_.micMuted || config_.deafened ? VoiceConnection::Send::Off
+                : config_.pushToTalk               ? VoiceConnection::Send::PushToTalk
+                                                    : VoiceConnection::Send::VoiceActivity;
+    voice_->SetSending(mode, config_.threshold);
+}
+
+LRESULT CALLBACK App::keyHook(int code, WPARAM w, LPARAM l) {
+    if (code == HC_ACTION && hookApp) {
+        auto* k = reinterpret_cast<KBDLLHOOKSTRUCT*>(l);
+        bool down = w == WM_KEYDOWN || w == WM_SYSKEYDOWN, up = w == WM_KEYUP || w == WM_SYSKEYUP;
+        if ((down || up) && hookApp->pushToTalk(int(k->vkCode), down)) return 1;
+    }
+    return CallNextHookEx(nullptr, code, w, l);
+}
+
+LRESULT CALLBACK App::mouseHook(int code, WPARAM w, LPARAM l) {
+    if (code == HC_ACTION && hookApp) {
+        auto* m = reinterpret_cast<MSLLHOOKSTRUCT*>(l);
+        int vk = 0;
+        if (w == WM_MBUTTONDOWN || w == WM_MBUTTONUP) vk = VK_MBUTTON;
+        if (w == WM_XBUTTONDOWN || w == WM_XBUTTONUP) vk = HIWORD(m->mouseData) == XBUTTON1 ? VK_XBUTTON1 : VK_XBUTTON2;
+        if (vk && hookApp->pushToTalk(vk, w == WM_MBUTTONDOWN || w == WM_XBUTTONDOWN)) return 1;
+    }
+    return CallNextHookEx(nullptr, code, w, l);
+}
+
+bool App::pushToTalk(int vk, bool down) {
+    if (bindingKey_) {
+        if (!down) return false;
+        bindingKey_ = false;
+        if (vk != VK_ESCAPE) {
+            config_.pttKey = vk;
+            SaveConfig(config_);
+        }
+        wake_();
+        return true;
+    }
+    if (vk != config_.pttKey || down == pttHeld_) return false;
+    pttHeld_ = down;
+    if (voice_) voice_->SetPushToTalk(down);
+    wake_();
+    return false;
+}
+
+void App::updateVoice() {
+    bool inCall = voice_ && voice_->GetState() == VoiceConnection::State::Connected;
+    bool want = (inCall && !config_.micMuted && !config_.deafened) || settingsVisible_;
+    if (!mic_)
+        mic_ = std::make_unique<Microphone>(
+            [this](const float* f, size_t n) {
+                std::lock_guard<std::mutex> lock(micMu_);
+                if (micSink_) micSink_->PushMic(f, n);
+            },
+            wake_);
+    if (want && (!mic_->Running() || micDevice_ != config_.input)) {
+        // A mic that won't open is tried again now and then, not every frame.
+        double t = GetTickCount64() / 1000.0;
+        if (micDevice_ != config_.input || t - micFailedAt_ > 5) {
+            micDevice_ = config_.input;
+            if (!mic_->Start(config_.input)) micFailedAt_ = t;
+        }
+    } else if (!want && mic_->Running()) {
+        mic_->Stop();
+    }
+    // The push-to-talk hooks, only while they could be needed.
+    bool hook = bindingKey_ || (voiceChannel_ && config_.pushToTalk && config_.pttKey);
+    if (hook && !keyHook_) {
+        hookApp = this;
+        keyHook_ = SetWindowsHookExW(WH_KEYBOARD_LL, keyHook, GetModuleHandleW(nullptr), 0);
+        mouseHook_ = SetWindowsHookExW(WH_MOUSE_LL, mouseHook, GetModuleHandleW(nullptr), 0);
+    } else if (!hook && keyHook_) {
+        UnhookWindowsHookEx(keyHook_);
+        if (mouseHook_) UnhookWindowsHookEx(mouseHook_);
+        keyHook_ = mouseHook_ = nullptr;
+        pttHeld_ = false;
     }
 }
 
@@ -293,6 +392,7 @@ void App::Pump() {
     std::vector<Dispatch> events;
     gateway_->Drain(events);
     for (const auto& d : events) onDispatch(d);
+    if (ready_) updateVoice();
 
     // Read what's on screen: the open channel, while the window has focus
     // and the newest messages are in view.
@@ -394,6 +494,10 @@ void App::onDispatch(const Dispatch& d) {
             // Moved: same server, new channel, so a new call.
             voiceChannel_ = ch;
             voiceGuild_ = ParseId(d.data.value("guild_id", json()));
+            {
+                std::lock_guard<std::mutex> lock(micMu_);
+                micSink_ = nullptr;
+            }
             voice_.reset();
             connectVoice();
         } else {
@@ -406,6 +510,10 @@ void App::onDispatch(const Dispatch& d) {
         voiceToken_ = d.data.value("token", "");
         voiceEndpoint_ = d.data["endpoint"].is_string() ? d.data["endpoint"].get<std::string>() : "";
         if (voice_) {
+            {
+                std::lock_guard<std::mutex> lock(micMu_);
+                micSink_ = nullptr;
+            }
             std::shared_ptr<VoiceConnection> old(voice_.release());
             fetcher_->Run([old]() mutable { old.reset(); });
         }

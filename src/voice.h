@@ -1,6 +1,6 @@
 // A voice channel connection: the voice gateway, audio over UDP, Discord's
-// end-to-end encryption (DAVE), and playing what everyone says. Listening
-// only, for now: nothing from the microphone is sent.
+// end-to-end encryption (DAVE), playing what everyone says, and sending
+// what the microphone hears.
 #pragma once
 
 #include <atomic>
@@ -18,6 +18,7 @@ public:
         Snowflake userId = 0, guildId = 0, channelId = 0;
         std::string sessionId, token, endpoint;
         std::string userAgent;
+        std::string output;  // the output device's name; empty for Windows' default
     };
     // wake is called from the connection's threads when something's
     // changed: its state, or who's speaking.
@@ -44,6 +45,16 @@ public:
     void SetDeafened(bool deaf);
     // SetOutputVolume sets everything's volume, 0 to 1.
     void SetOutputVolume(float gain);
+
+    // Sending: off (muted), when the mic's louder than a threshold in dBFS,
+    // or while the push-to-talk key's held.
+    enum class Send { Off, VoiceActivity, PushToTalk };
+    void SetSending(Send mode, float threshold);
+    void SetPushToTalk(bool held);
+    // PushMic takes 20ms of mono audio from the microphone's thread.
+    void PushMic(const float* samples, size_t n);
+    // Transmitting says we're sending sound now.
+    bool Transmitting() const;
 
 private:
     struct Impl;

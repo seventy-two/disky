@@ -1,6 +1,7 @@
 // Tests for the client's portable code. Build and run with build.bat, or on
 // Linux with the command in the README.
 #include <cstdio>
+#include <cmath>
 #include <cstring>
 #include <string>
 
@@ -240,6 +241,17 @@ static void testRtp() {
     CHECK(out[0] > 0.24f && out[0] < 0.26f);
     for (int i = 0; i < 20; i++) p.Push(frame.data(), kFrameSamples);
     CHECK(p.Buffered() <= kPlayoutMax);
+    // Loudness and the voice activity gate.
+    std::vector<float> quiet(960, 0.0f), loud(960, 0.5f);
+    CHECK(LevelDb(quiet.data(), quiet.size()) <= -99);
+    CHECK(std::fabs(LevelDb(loud.data(), loud.size()) + 6.02f) < 0.1f);
+    Gate g;
+    CHECK(!g.Frame(-70, -50));
+    CHECK(g.Frame(-30, -50));
+    int held = 0;
+    while (g.Frame(-70, -50)) held++;
+    CHECK_EQ(held, kGateHoldFrames - 1);
+
     Playout w;
     CHECK_EQ(w.Arrived(65535), 0);
     CHECK_EQ(w.Arrived(0), 0);  // wraps

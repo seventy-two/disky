@@ -82,6 +82,21 @@ private:
     uint16_t last_ = 0;
 };
 
+// LevelDb is a frame's loudness, in dB below full scale (-100 for silence).
+float LevelDb(const float* samples, size_t n);
+
+// Gate decides when voice activity sends: open once a frame's louder than
+// the threshold, and held open a little after, so words' ends aren't cut.
+class Gate {
+public:
+    // Frame takes one 20ms frame's level and says whether to send it.
+    bool Frame(float db, float threshold);
+
+private:
+    int hold_ = 0;
+};
+constexpr int kGateHoldFrames = 15;  // 300ms
+
 constexpr size_t kPlayoutTarget = kSampleRate * 60 / 1000;  // held back before playing
 constexpr size_t kPlayoutMax = kSampleRate * 250 / 1000;    // more than this and it skips ahead
 

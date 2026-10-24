@@ -752,7 +752,9 @@ void App::voiceList(float x, float y, float w, float h) {
             ImVec2 ap(pa.x, pa.y + (personRow - av) / 2);
             avatar(v.userId, guild_, ap, av);
             // A green ring while they're talking (only heard in our call).
-            if (voice_ && id == voiceChannel_ && voice_->Speaking(v.userId)) {
+            bool talking = voice_ && id == voiceChannel_ &&
+                           (v.userId == store_.me ? voice_->Transmitting() : voice_->Speaking(v.userId));
+            if (talking) {
                 float t = std::max(1.5f, 2 * scale_);
                 dl->AddRect(ImVec2(ap.x - t / 2, ap.y - t / 2), ImVec2(ap.x + av + t / 2, ap.y + av + t / 2), U32(c.good), 0, 0, t);
             }
@@ -827,7 +829,7 @@ void App::voicePanel(float x, float y, float w) {
                                                                    : "Connecting…";
     ImU32 col = U32(state == VoiceConnection::State::Connected ? c.good : state == VoiceConnection::State::Failed ? c.dnd : c.idle);
     float bs = 28 * scale_, pad = 8 * scale_;
-    float textW = w - pad * 2 - bs * 2 - 4 * scale_;
+    float textW = w - pad * 2 - bs * 3 - 8 * scale_;
     ImGui::PushFont(fonts_.semibold, 13);
     dl->AddText(ImVec2(a.x + pad, a.y + 8 * scale_), col, line.c_str());
     ImGui::PopFont();
@@ -840,7 +842,7 @@ void App::voicePanel(float x, float y, float w) {
             tip = voice_->Ping() ? std::to_string(voice_->Ping()) + "ms to the voice server" : "Connected";
             tip += voice_->Encrypted() ? "\nEnd-to-end encrypted" : "\nNot end-to-end encrypted";
         } else tip = "Joining the call";
-        tip += "\nListening only: your mic stays off";
+        if (mic_ && !mic_->Error().empty() && !config_.micMuted && !config_.deafened) tip += "\n" + mic_->Error();
         ImGui::SetTooltip("%s", tip.c_str());
     }
     std::string where = store_.ChannelName(voiceChannel_);
@@ -849,14 +851,33 @@ void App::voicePanel(float x, float y, float w) {
     ImageFor images = [this](const std::string& u) { return texture(u); };
     Label(dl, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(a.x + pad, a.y + 28 * scale_), U32(c.muted), where, textW, images);
     ImGui::PopFont();
-    // Deafen and leave.
+    // Mute, deafen and leave.
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
     ImGui::PushFont(fonts_.regular, 15);
-    ImGui::SetCursorScreenPos(ImVec2(a.x + w - pad - bs * 2 - 4 * scale_, a.y + (h - bs) / 2));
+    ImGui::SetCursorScreenPos(ImVec2(a.x + w - pad - bs * 3 - 8 * scale_, a.y + (h - bs) / 2));
+    bool muted = config_.micMuted || config_.deafened;
+    if (muted) ImGui::PushStyleColor(ImGuiCol_Text, c.dnd);
+    if (ImGui::Button(muted ? icon::MicOff : icon::Mic, ImVec2(bs, bs))) {
+        // Unmuting while deafened undeafens too, as Discord does.
+        if (config_.deafened) {
+            config_.deafened = false;
+            config_.micMuted = false;
+            if (voice_) voice_->SetDeafened(false);
+        } else {
+            config_.micMuted = !config_.micMuted;
+        }
+        applySending();
+        sendVoiceState();
+        SaveConfig(config_);
+    }
+    if (muted) ImGui::PopStyleColor();
+    ImGui::SetItemTooltip("%s", muted ? "Unmute" : config_.pushToTalk ? "Mute (push to talk is on)" : "Mute");
+    ImGui::SameLine(0, 4 * scale_);
     if (config_.deafened) ImGui::PushStyleColor(ImGuiCol_Text, c.dnd);
     if (ImGui::Button(icon::Headphone, ImVec2(bs, bs))) {
         config_.deafened = !config_.deafened;
         if (voice_) voice_->SetDeafened(config_.deafened);
+        applySending();
         sendVoiceState();
         SaveConfig(config_);
     }
@@ -1086,7 +1107,9 @@ void App::settings() {
     ImGui::SetNextWindowSize(ImVec2(420 * scale_, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20 * scale_, 16 * scale_));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8 * scale_, 10 * scale_));
+    settingsVisible_ = false;
     if (ImGui::BeginPopupModal("Settings", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar)) {
+        settingsVisible_ = true;
         ImGui::PushFont(fonts_.semibold, kH2);
         ImGui::TextUnformatted("Settings");
         ImGui::PopFont();
@@ -1096,6 +1119,8 @@ void App::settings() {
         if (ImGui::Checkbox("Start with Windows", &startChoice_)) SetStartWithWindows(startChoice_);
         if (ImGui::Checkbox("Show the member list", &config_.members)) SaveConfig(config_);
         ImGui::Separator();
+        voiceSettings();
+        ImGui::Separator();
         ImGui::PushStyleColor(ImGuiCol_Button, c.bad);
         if (ImGui::Button("Sign out")) {
             ImGui::CloseCurrentPopup();
@@ -1103,10 +1128,98 @@ void App::settings() {
         }
         ImGui::PopStyleColor();
         ImGui::SameLine(ImGui::GetContentRegionAvail().x - 60 * scale_ + ImGui::GetCursorPosX() - ImGui::GetStyle().ItemSpacing.x);
-        if (ImGui::Button("Done", ImVec2(60 * scale_, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
+        if (ImGui::Button("Done", ImVec2(60 * scale_, 0)) || (ImGui::IsKeyPressed(ImGuiKey_Escape) && !bindingKey_)) {
+            bindingKey_ = false;
+            ImGui::CloseCurrentPopup();
+        }
         ImGui::EndPopup();
     }
     ImGui::PopStyleVar(2);
+}
+
+namespace {
+
+std::string keyName(int vk) {
+    switch (vk) {
+    case 0: return "None";
+    case VK_MBUTTON: return "Middle mouse";
+    case VK_XBUTTON1: return "Mouse 4";
+    case VK_XBUTTON2: return "Mouse 5";
+    }
+    UINT sc = MapVirtualKeyW(UINT(vk), MAPVK_VK_TO_VSC);
+    // Keys that share scan codes with the number pad need the extended bit.
+    switch (vk) {
+    case VK_INSERT: case VK_DELETE: case VK_HOME: case VK_END: case VK_PRIOR: case VK_NEXT:
+    case VK_LEFT: case VK_RIGHT: case VK_UP: case VK_DOWN: case VK_RCONTROL: case VK_RMENU: case VK_DIVIDE:
+        sc |= 0x100;
+    }
+    wchar_t name[64];
+    int n = GetKeyNameTextW(LONG(sc << 16), name, 64);
+    return n > 0 ? Narrow(std::wstring_view(name, size_t(n))) : "Key " + std::to_string(vk);
+}
+
+}  // namespace
+
+void App::voiceSettings() {
+    const Palette& c = Colours();
+    ImGui::PushFont(fonts_.semibold, 14);
+    ImGui::TextUnformatted("Voice");
+    ImGui::PopFont();
+    // Devices, listed when Settings opens (listing takes a moment).
+    static std::vector<std::string> inputs, outputs;
+    if (ImGui::IsWindowAppearing()) {
+        inputs = AudioDevices(true);
+        outputs = AudioDevices(false);
+    }
+    auto picker = [&](const char* label, std::string& chosen, const std::vector<std::string>& names) {
+        ImGui::SetNextItemWidth(-1);
+        std::string shown = chosen.empty() ? "Windows' default" : chosen;
+        if (ImGui::BeginCombo(label, shown.c_str())) {
+            if (ImGui::Selectable("Windows' default", chosen.empty())) chosen.clear(), SaveConfig(config_);
+            for (const auto& n : names)
+                if (ImGui::Selectable(n.c_str(), n == chosen)) chosen = n, SaveConfig(config_);
+            ImGui::EndCombo();
+        }
+    };
+    ImGui::TextDisabled("Microphone");
+    picker("##input", config_.input, inputs);
+    ImGui::TextDisabled("Speakers (from the next call)");
+    picker("##output", config_.output, outputs);
+
+    int mode = config_.pushToTalk ? 1 : 0;
+    bool changed = ImGui::RadioButton("Voice activity", &mode, 0);
+    ImGui::SameLine();
+    changed |= ImGui::RadioButton("Push to talk", &mode, 1);
+    if (changed) {
+        config_.pushToTalk = mode == 1;
+        applySending();
+        SaveConfig(config_);
+    }
+    if (config_.pushToTalk) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Key:");
+        ImGui::SameLine();
+        std::string label = bindingKey_ ? "Press a key or mouse button…" : keyName(config_.pttKey);
+        if (ImGui::Button((label + "###ptt").c_str(), ImVec2(-1, 0))) bindingKey_ = !bindingKey_;
+        ImGui::TextDisabled("Works while disky's in the background. Escape cancels.");
+    } else {
+        // The threshold over a live meter of the mic.
+        float level = mic_ ? mic_->Level() : -100;
+        constexpr float lo = -80, hi = 0;
+        ImVec2 a = ImGui::GetCursorScreenPos();
+        float w = ImGui::GetContentRegionAvail().x, bh = 8 * scale_;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        auto x = [&](float db) { return a.x + w * (std::clamp(db, lo, hi) - lo) / (hi - lo); };
+        dl->AddRectFilled(a, ImVec2(a.x + w, a.y + bh), U32(c.input));
+        dl->AddRectFilled(a, ImVec2(x(level), a.y + bh), U32(level >= config_.threshold ? c.good : c.idle));
+        dl->AddRectFilled(ImVec2(x(config_.threshold) - scale_, a.y - 2 * scale_), ImVec2(x(config_.threshold) + scale_, a.y + bh + 2 * scale_),
+                          U32(c.heading));
+        ImGui::Dummy(ImVec2(w, bh));
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::SliderFloat("##threshold", &config_.threshold, lo, -10, "Sends above %.0f dB")) applySending();
+        if (ImGui::IsItemDeactivatedAfterEdit()) SaveConfig(config_);
+        if (mic_ && !mic_->Error().empty()) ImGui::TextColored(c.dnd, "%s", mic_->Error().c_str());
+    }
 }
 
 // --- emoji picker ---

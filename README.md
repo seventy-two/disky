@@ -37,9 +37,12 @@ result is a single `disky.exe` with nothing to install.
 - **Voice**: the speaker in the title bar shows or hides the server's voice
   channels, in a column of their own with who's in each (muted, deafened,
   camera, LIVE). The speaker turns green, with sound waves, while anyone's
-  in one. Click a channel to join it and listen; your mic stays off for
-  now. Whoever's talking gets a green ring; right-click someone for their
-  volume. The bar under the list deafens and leaves. Calls are end-to-end
+  in one. Click a channel to join it. Whoever's talking (you included)
+  gets a green ring; right-click someone for their volume. The bar under
+  the list mutes, deafens and leaves. Settings has the microphone and
+  speakers, and voice activity (with a meter, to set the level it sends
+  above) or push to talk, on any key or the middle and side mouse buttons,
+  working while disky's in the background. Calls are end-to-end
   encrypted (Discord's DAVE) like everyone else's. Each call is logged
   (nothing secret) to `%APPDATA%\disky\voice.log`.
 - **Typing**: who else is typing shows under the box; disky tells Discord
@@ -88,7 +91,8 @@ shortcodes) from gemoji's `emoji.json`.
 - Images and emoji are drawn from Discord's CDN and Twemoji (via jsDelivr).
 - Voice: voice gateway v8, UDP with `aead_aes256_gcm_rtpsize` (AES-GCM from
   Windows' BCrypt), DAVE end-to-end encryption through libdave's C API,
-  Opus decoding, and playback through miniaudio.
+  Opus at 64kbps mono with in-band error correction, and miniaudio for the
+  microphone and speakers.
 
 Third-party code: Dear ImGui (MIT), nlohmann/json (MIT), Nayuki's QR Code
 generator (MIT), gemoji's emoji list (MIT), miniaudio (MIT-0). Built by

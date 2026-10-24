@@ -20,6 +20,7 @@
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "markdown.h"
+#include "mic.h"
 #include "remoteauth.h"
 #include "richtext.h"
 #include "store.h"
@@ -87,6 +88,16 @@ private:
     void sendVoiceState();
     void connectVoice();
     void dropVoice();
+    // updateVoice runs the microphone while it's wanted (in a call and not
+    // muted, or for Settings' meter), tells the call how to send, and hooks
+    // the push-to-talk key while it's needed.
+    void updateVoice();
+    void applySending();
+    // pushToTalk is the low-level hooks': a key or mouse button went down
+    // or up. True to swallow it: the press that binds a new key.
+    bool pushToTalk(int vk, bool down);
+    static LRESULT CALLBACK keyHook(int code, WPARAM w, LPARAM l);
+    static LRESULT CALLBACK mouseHook(int code, WPARAM w, LPARAM l);
     void deleteMessage(uint64_t channel, uint64_t id);
     void react(uint64_t channel, uint64_t id, const Emoji& e, bool add);
     void attachFile(const std::wstring& path);
@@ -146,6 +157,7 @@ private:
     void bell(ImVec2 at, float w, float h);
     void notices();
     void settings();
+    void voiceSettings();
     void avatar(uint64_t user, uint64_t guild, ImVec2 at, float size, bool status = false);
 
     // Helpers.
@@ -307,6 +319,15 @@ private:
     std::string voiceSession_, voiceToken_, voiceEndpoint_;
     std::unique_ptr<VoiceConnection> voice_;
     uint64_t volumeFor_ = 0;  // whose volume the popup's for
+    std::unique_ptr<Microphone> mic_;
+    std::mutex micMu_;                // guards micSink_ against the capture thread
+    VoiceConnection* micSink_ = nullptr;
+    std::string micDevice_;           // what the mic was started with
+    double micFailedAt_ = -100;       // and when it last wouldn't start
+    bool settingsVisible_ = false;    // Settings is up, so its meter wants the mic
+    HHOOK keyHook_ = nullptr, mouseHook_ = nullptr;
+    bool bindingKey_ = false;         // the next key pressed becomes push-to-talk
+    bool pttHeld_ = false;
 
     // Emoji picker: for a reaction (message set) or the composer.
     bool pickerOpen_ = false;

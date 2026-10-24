@@ -1,6 +1,7 @@
 #include "rtp.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace disky {
@@ -131,6 +132,19 @@ size_t Playout::Mix(float* out, size_t frames, float gain) {
     // Run dry, and it waits to fill again before playing on.
     if (pcm_.empty()) filling_ = true;
     return n;
+}
+
+float LevelDb(const float* samples, size_t n) {
+    double sum = 0;
+    for (size_t i = 0; i < n; i++) sum += double(samples[i]) * samples[i];
+    double rms = n ? std::sqrt(sum / double(n)) : 0;
+    return rms > 1e-5 ? float(20 * std::log10(rms)) : -100.0f;
+}
+
+bool Gate::Frame(float db, float threshold) {
+    if (db >= threshold) hold_ = kGateHoldFrames;
+    else if (hold_ > 0) hold_--;
+    return hold_ > 0;
 }
 
 void Playout::Reset() {

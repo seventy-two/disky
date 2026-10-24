@@ -80,6 +80,12 @@ Config LoadConfig() {
     c.voice = j.value("voice", true);
     c.volume = j.value("volume", 0.5f);
     c.deafened = j.value("deafened", false);
+    c.micMuted = j.value("micMuted", false);
+    c.pushToTalk = j.value("pushToTalk", false);
+    c.threshold = j.value("threshold", -50.0f);
+    c.pttKey = j.value("pttKey", 0);
+    c.input = j.value("input", "");
+    c.output = j.value("output", "");
     if (auto it = j.find("voiceVolumes"); it != j.end() && it->is_object())
         for (const auto& [k, v] : it->items())
             if (v.is_number()) c.voiceVolumes[k] = v.get<float>();
@@ -107,6 +113,12 @@ bool SaveConfig(const Config& c) {
         {"voice", c.voice},
         {"volume", c.volume},
         {"deafened", c.deafened},
+        {"micMuted", c.micMuted},
+        {"pushToTalk", c.pushToTalk},
+        {"threshold", c.threshold},
+        {"pttKey", c.pttKey},
+        {"input", c.input},
+        {"output", c.output},
         {"voiceVolumes", c.voiceVolumes},
         {"recentEmoji", c.recentEmoji},
     };

@@ -28,6 +28,11 @@ struct Config {
     // whether we're deafened.
     std::map<std::string, float> voiceVolumes;
     bool deafened = false;
+    bool micMuted = false;
+    bool pushToTalk = false;   // else voice activity
+    float threshold = -50;     // voice activity's, in dBFS
+    int pttKey = 0;            // a virtual-key code (mouse buttons too)
+    std::string input, output;  // device names; empty for Windows' defaults
     std::vector<std::string> recentEmoji;  // newest first, as typed in a message
 };
 

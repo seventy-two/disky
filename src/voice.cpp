@@ -8,6 +8,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <deque>
 #include <map>
 #include <mutex>
 #include <random>
@@ -23,6 +24,8 @@
 #include "rtp.h"
 
 namespace disky {
+
+bool OpenPlayback(ma_context* ctx, ma_device* device, const std::string& name, ma_device_data_proc callback, void* user);
 
 namespace {
 
@@ -139,6 +142,7 @@ public:
         }, nullptr);
     }
     ~Dave() {
+        if (encryptor_) daveEncryptorDestroy(encryptor_);
         for (auto& [u, d] : decryptors_) daveDecryptorDestroy(d);
         if (session_) daveSessionDestroy(session_);
     }
@@ -267,6 +271,31 @@ public:
         return true;
     }
 
+    // Encrypt puts our own Opus frame into end-to-end encryption; false if
+    // our keys aren't ready yet.
+    bool Encrypt(uint32_t ssrc, const uint8_t* frame, size_t n, std::string& out) {
+        if (version_ == 0) {
+            out.assign(reinterpret_cast<const char*>(frame), n);
+            return true;
+        }
+        if (!encryptor_) return false;
+        if (ssrc != ssrc_) {
+            daveEncryptorAssignSsrcToCodec(encryptor_, ssrc, DAVE_CODEC_OPUS);
+            ssrc_ = ssrc;
+        }
+        size_t cap = daveEncryptorGetMaxCiphertextByteSize(encryptor_, DAVE_MEDIA_TYPE_AUDIO, n);
+        out.resize(cap);
+        size_t written = 0;
+        auto rc = daveEncryptorEncrypt(encryptor_, DAVE_MEDIA_TYPE_AUDIO, ssrc, frame, n, reinterpret_cast<uint8_t*>(out.data()), cap,
+                                       &written);
+        if (rc != DAVE_ENCRYPTOR_RESULT_CODE_SUCCESS) {
+            if (++encryptFailures_ % 50 == 1) vlog("dave: encrypt failed (" + std::to_string(int(rc)) + ")");
+            return false;
+        }
+        out.resize(written);
+        return true;
+    }
+
 private:
     void sendKeyPackage() {
         uint8_t* kp = nullptr;
@@ -283,7 +312,19 @@ private:
     }
     // setUp gives a speaker the keys for a protocol version.
     void setUp(const std::string& user, uint16_t version) {
-        if (user == self_) return;  // our own keys only matter for sending
+        if (user == self_) {
+            if (!encryptor_) encryptor_ = daveEncryptorCreate();
+            if (version == 0) {
+                daveEncryptorSetPassthroughMode(encryptor_, true);
+                return;
+            }
+            if (DAVEKeyRatchetHandle k = daveSessionGetKeyRatchet(session_, user.c_str())) {
+                daveEncryptorSetKeyRatchet(encryptor_, k);
+                daveKeyRatchetDestroy(k);
+            }
+            daveEncryptorSetPassthroughMode(encryptor_, false);
+            return;
+        }
         DAVEDecryptorHandle& d = decryptors_[user];
         if (!d) d = daveDecryptorCreate();
         if (version == 0) {
@@ -297,7 +338,11 @@ private:
     }
     void prepare(int id, uint16_t version) {
         for (const auto& u : recognised_) setUp(u, version);
-        if (id != 0) transitions_[id] = version;
+        // Our own keys change once everyone's ready (at once for a restart).
+        if (id == 0)
+            setUp(self_, version);
+        else
+            transitions_[id] = version;
         latest_ = version;
     }
     void execute(int id) {
@@ -307,6 +352,7 @@ private:
         transitions_.erase(it);
         version_ = v;
         if (v == 0) daveSessionReset(session_);
+        setUp(self_, v);
     }
 
     std::string self_;
@@ -315,8 +361,10 @@ private:
     std::set<std::string> recognised_;
     std::map<int, uint16_t> transitions_;
     std::unordered_map<std::string, DAVEDecryptorHandle> decryptors_;
+    DAVEEncryptorHandle encryptor_ = nullptr;
+    uint32_t ssrc_ = 0;
     uint16_t latest_ = 0, version_ = 0;
-    int failures_ = 0;
+    int failures_ = 0, encryptFailures_ = 0;
 };
 
 // Speaker is one person's audio coming in.
@@ -365,8 +413,21 @@ struct VoiceConnection::Impl {
     uint16_t sendSeq = 0;
     uint32_t sendTs = 0;
 
+    ma_context audioCtx{};
+    bool ctxUp = false;
     ma_device device{};
     bool deviceUp = false;
+
+    // Sending: the microphone's frames, queued for the sender thread.
+    std::thread senderThread;
+    std::mutex micMu;
+    std::condition_variable micCv;
+    std::deque<std::vector<float>> mic;
+    std::atomic<int> sendMode{0};  // VoiceConnection::Send
+    std::atomic<float> threshold{-50};
+    std::atomic<bool> ptt{false}, transmitting{false};
+    OpusEncoder* encoder = nullptr;
+    Gate gate;
 
     void setState(State s, const std::string& why = {}) {
         {
@@ -399,7 +460,9 @@ struct VoiceConnection::Impl {
     bool startUdp(const std::string& ip, int port, std::string& myIp, uint16_t& myPort, std::string& err);
     void receive();
     void packet(const uint8_t* b, size_t n);
+    void sendOpus(const uint8_t* frame, size_t n);
     void sendSilence(int frames);
+    void sender();
     void startAudio();
     static void audioCallback(ma_device* d, void* out, const void*, ma_uint32 frames);
 };
@@ -579,7 +642,12 @@ bool VoiceConnection::Impl::session(bool resume, std::string& err, USHORT& close
             }
             if (!udpThread.joinable()) udpThread = std::thread(&Impl::receive, this);
             startAudio();
-            sendSilence(5);
+            // A little silence first, before the sender (which owns the
+            // packet counters from then on) starts.
+            if (!senderThread.joinable()) {
+                sendSilence(5);
+                senderThread = std::thread(&Impl::sender, this);
+            }
             reached = true;
             setState(State::Connected);
             break;
@@ -741,42 +809,121 @@ void VoiceConnection::Impl::packet(const uint8_t* b, size_t n) {
     if (startedSpeaking) wake();
 }
 
-void VoiceConnection::Impl::sendSilence(int frames) {
-    for (int i = 0; i < frames; i++) {
-        std::string header = RtpHeader(sendSeq++, sendTs, ssrc);
-        sendTs += kFrameSamples;
-        uint8_t nonce[12] = {};
-        uint32_t c = sendNonce++;
-        nonce[0] = uint8_t(c >> 24);
-        nonce[1] = uint8_t(c >> 16);
-        nonce[2] = uint8_t(c >> 8);
-        nonce[3] = uint8_t(c);
-        std::string sealed;
-        {
-            std::lock_guard<std::mutex> lock(aesMu);
-            if (!aes.Seal(nonce, header, kSilence, sizeof(kSilence), sealed)) return;
-        }
-        std::string pkt = header + sealed + std::string(reinterpret_cast<char*>(nonce), 4);
-        ::send(sock, pkt.data(), int(pkt.size()), 0);
+void VoiceConnection::Impl::sendOpus(const uint8_t* frame, size_t n) {
+    std::string header = RtpHeader(sendSeq++, sendTs, ssrc);
+    uint8_t nonce[12] = {};
+    uint32_t c = sendNonce++;
+    nonce[0] = uint8_t(c >> 24);
+    nonce[1] = uint8_t(c >> 16);
+    nonce[2] = uint8_t(c >> 8);
+    nonce[3] = uint8_t(c);
+    std::string sealed;
+    {
+        std::lock_guard<std::mutex> lock(aesMu);
+        if (!aes.Ready() || !aes.Seal(nonce, header, frame, n, sealed)) return;
     }
+    std::string pkt = header + sealed + std::string(reinterpret_cast<char*>(nonce), 4);
+    ::send(sock, pkt.data(), int(pkt.size()), 0);
+}
+
+void VoiceConnection::Impl::sendSilence(int frames) {
+    // Silence goes as it is, outside end-to-end encryption, as Discord's
+    // own clients send it.
+    for (int i = 0; i < frames; i++) {
+        sendOpus(kSilence, sizeof(kSilence));
+        sendTs += kFrameSamples;
+    }
+}
+
+void VoiceConnection::Impl::sender() {
+    int err = 0;
+    encoder = opus_encoder_create(kSampleRate, 1, OPUS_APPLICATION_VOIP, &err);
+    if (err != OPUS_OK) {
+        vlog("opus: no encoder");
+        encoder = nullptr;
+        return;
+    }
+    opus_encoder_ctl(encoder, OPUS_SET_BITRATE(64000));
+    opus_encoder_ctl(encoder, OPUS_SET_INBAND_FEC(1));
+    opus_encoder_ctl(encoder, OPUS_SET_PACKET_LOSS_PERC(5));
+    bool speaking = false;
+    int sent = 0, failed = 0;  // this burst's frames, for the log
+    std::vector<float> f;
+    unsigned char packet[1500];
+    while (!stop) {
+        {
+            std::unique_lock<std::mutex> lock(micMu);
+            micCv.wait_for(lock, std::chrono::milliseconds(200), [&] { return stop || !mic.empty(); });
+            if (stop) break;
+            if (mic.empty()) {
+                // The mic's stopped: finish off a sentence in progress.
+                if (speaking) {
+                    sendSilence(5);
+                    sendJson(vop::Speaking, {{"speaking", 0}, {"delay", 0}, {"ssrc", ssrc}});
+                    speaking = false;
+                    transmitting = false;
+                    wake();
+                }
+                continue;
+            }
+            f = std::move(mic.front());
+            mic.pop_front();
+        }
+        bool up;
+        {
+            std::lock_guard<std::mutex> lock(mu);
+            up = state == State::Connected;
+        }
+        auto mode = VoiceConnection::Send(sendMode.load());
+        bool open = gate.Frame(LevelDb(f.data(), f.size()), threshold);
+        bool send = up && (mode == VoiceConnection::Send::PushToTalk ? ptt.load() : mode == VoiceConnection::Send::VoiceActivity && open);
+        if (send && !speaking) {
+            sendJson(vop::Speaking, {{"speaking", 1}, {"delay", 0}, {"ssrc", ssrc}});
+            speaking = true;
+            transmitting = true;
+            wake();
+        }
+        if (send) {
+            int n = opus_encode_float(encoder, f.data(), kFrameSamples, packet, sizeof(packet));
+            std::string out;
+            bool ok = false;
+            if (n > 0) {
+                std::lock_guard<std::mutex> lock(daveMu);
+                ok = dave && dave->Encrypt(ssrc, packet, size_t(n), out);
+            }
+            if (ok) {
+                sendOpus(reinterpret_cast<const uint8_t*>(out.data()), out.size());
+                sent++;
+            } else {
+                failed++;
+            }
+        } else if (speaking) {
+            vlog("sent " + std::to_string(sent) + " frames" + (failed ? ", " + std::to_string(failed) + " not ready to encrypt" : ""));
+            sent = failed = 0;
+            sendSilence(5);
+            sendJson(vop::Speaking, {{"speaking", 0}, {"delay", 0}, {"ssrc", ssrc}});
+            speaking = false;
+            transmitting = false;
+            wake();
+            continue;  // the silence moved the clock on
+        }
+        sendTs += kFrameSamples;
+    }
+    opus_encoder_destroy(encoder);
+    encoder = nullptr;
 }
 
 void VoiceConnection::Impl::startAudio() {
     if (deviceUp) return;
-    ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
-    cfg.playback.format = ma_format_f32;
-    cfg.playback.channels = kChannels;
-    cfg.sampleRate = kSampleRate;
-    cfg.periodSizeInMilliseconds = 10;
-    cfg.dataCallback = audioCallback;
-    cfg.pUserData = this;
-    if (ma_device_init(nullptr, &cfg, &device) != MA_SUCCESS) {
-        vlog("audio: no output device");
-        return;
+    if (!ctxUp) {
+        if (ma_context_init(nullptr, 0, nullptr, &audioCtx) != MA_SUCCESS) {
+            vlog("audio: no context");
+            return;
+        }
+        ctxUp = true;
     }
-    if (ma_device_start(&device) != MA_SUCCESS) {
-        ma_device_uninit(&device);
-        vlog("audio: output wouldn't start");
+    if (!OpenPlayback(&audioCtx, &device, p.output, audioCallback, this)) {
+        vlog("audio: no output device");
         return;
     }
     deviceUp = true;
@@ -814,9 +961,12 @@ VoiceConnection::~VoiceConnection() {
         std::lock_guard<std::mutex> lock(impl_->wsMu);
         if (impl_->ws) impl_->ws->Close();
     }
+    impl_->micCv.notify_all();
     if (impl_->control.joinable()) impl_->control.join();
     if (impl_->udpThread.joinable()) impl_->udpThread.join();
+    if (impl_->senderThread.joinable()) impl_->senderThread.join();
     if (impl_->deviceUp) ma_device_uninit(&impl_->device);
+    if (impl_->ctxUp) ma_context_uninit(&impl_->audioCtx);
     if (impl_->sock != INVALID_SOCKET) closesocket(impl_->sock);
     vlog("closed");
 }
@@ -856,6 +1006,25 @@ void VoiceConnection::SetVolume(Snowflake user, float gain) {
 }
 
 void VoiceConnection::SetDeafened(bool deaf) { impl_->deaf = deaf; }
+
+void VoiceConnection::SetSending(Send mode, float threshold) {
+    impl_->sendMode = int(mode);
+    impl_->threshold = threshold;
+}
+
+void VoiceConnection::SetPushToTalk(bool held) { impl_->ptt = held; }
+
+void VoiceConnection::PushMic(const float* samples, size_t n) {
+    {
+        std::lock_guard<std::mutex> lock(impl_->micMu);
+        impl_->mic.emplace_back(samples, samples + n);
+        // A stalled sender shouldn't build up a delay.
+        while (impl_->mic.size() > 10) impl_->mic.pop_front();
+    }
+    impl_->micCv.notify_one();
+}
+
+bool VoiceConnection::Transmitting() const { return impl_->transmitting; }
 void VoiceConnection::SetOutputVolume(float gain) { impl_->outputGain = gain; }
 
 }  // namespace disky
