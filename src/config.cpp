@@ -86,6 +86,9 @@ Config LoadConfig() {
     c.pttKey = j.value("pttKey", 0);
     c.input = j.value("input", "");
     c.output = j.value("output", "");
+    if (auto it = j.find("lastChannels"); it != j.end() && it->is_object())
+        for (auto& [k, v] : it->items())
+            if (v.is_string()) c.lastChannels[k] = v.get<std::string>();
     if (auto it = j.find("voiceVolumes"); it != j.end() && it->is_object())
         for (const auto& [k, v] : it->items())
             if (v.is_number()) c.voiceVolumes[k] = v.get<float>();
@@ -119,6 +122,7 @@ bool SaveConfig(const Config& c) {
         {"pttKey", c.pttKey},
         {"input", c.input},
         {"output", c.output},
+        {"lastChannels", c.lastChannels},
         {"voiceVolumes", c.voiceVolumes},
         {"recentEmoji", c.recentEmoji},
     };

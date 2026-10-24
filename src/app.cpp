@@ -677,7 +677,8 @@ void App::open(uint64_t guild, uint64_t channel) {
     commandPicked_.clear();
     commandPick_ = 0;
     if (guild && !channel) {
-        channel = lastChannel_.count(guild) ? lastChannel_[guild] : 0;
+        auto last = config_.lastChannels.find(IdString(guild));
+        channel = last == config_.lastChannels.end() ? 0 : std::strtoull(last->second.c_str(), nullptr, 10);
         if (!store_.channels.count(channel) || !store_.CanView(channel)) channel = 0;
         if (!channel)
             for (uint64_t c : store_.GuildChannels(guild))
@@ -689,7 +690,7 @@ void App::open(uint64_t guild, uint64_t channel) {
     bool changed = channel != channel_;
     guild_ = guild;
     channel_ = channel;
-    if (guild) lastChannel_[guild] = channel;
+    if (guild && channel) config_.lastChannels[IdString(guild)] = IdString(channel);
     config_.guild = guild;
     config_.channel = channel;
     // Direct messages with none picked: show the list to pick from, until

@@ -19,6 +19,8 @@ struct Config {
     bool maximised = false;
     // The guild and channel last open; guild 0 for DMs.
     uint64_t guild = 0, channel = 0;
+    // The channel last open in each guild, by guild ID, both as strings.
+    std::map<std::string, std::string> lastChannels;
     bool notify = true;
     bool members = true;  // the member list is shown
     bool channels = true;  // the channel or DM list is shown

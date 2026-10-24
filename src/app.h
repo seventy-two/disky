@@ -231,7 +231,6 @@ private:
 
     // Where we are.
     uint64_t guild_ = 0, channel_ = 0;
-    std::map<uint64_t, uint64_t> lastChannel_;  // per guild
     std::unordered_map<uint64_t, std::string> listFor_;  // channel → member list ID
     std::unordered_map<uint64_t, int> listRanges_;       // channel → ranges subscribed
     uint64_t subscribedChannel_ = 0;
