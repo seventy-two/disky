@@ -108,6 +108,15 @@ private:
     static LRESULT CALLBACK mouseHook(int code, WPARAM w, LPARAM l);
     void deleteMessage(uint64_t channel, uint64_t id);
     void react(uint64_t channel, uint64_t id, const Emoji& e, bool add);
+    // Who reacted, by message and emoji: fetched the first time a reaction's
+    // hovered, again once its count has changed.
+    struct Reactors {
+        int count = -1;  // the count when fetched
+        bool loading = false, failed = false;
+        std::vector<uint64_t> users;
+    };
+    std::map<std::string, Reactors> reactors_;
+    const Reactors& reactors(const Message& m, const Reaction& r);
     void attachFile(const std::wstring& path);
     bool pasteImage();
     // notifyMention adds a mention or DM to the notification panel.

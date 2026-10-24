@@ -269,6 +269,12 @@ public:
     std::vector<Snowflake> GuildsInOrder() const;
 
     const User* FindUser(Snowflake id) const;
+    // ReadUsers remembers user objects fetched outside the gateway (a
+    // reaction's reactors).
+    void ReadUsers(const json& list) {
+        if (list.is_array())
+            for (const auto& u : list) readUser(u);
+    }
     const Member* FindMember(Snowflake guildId, Snowflake userId) const;
     // DisplayName is a user's name in a guild: nickname, else display name,
     // else username; "Unknown" if we don't know them yet.

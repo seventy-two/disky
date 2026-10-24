@@ -1015,7 +1015,36 @@ void App::reactions(const Message& m, float x, float y, float w) {
             std::string name = r.emoji.name;
             if (!r.emoji.id)
                 if (const EmojiEntry* e = EmojiByChar(r.emoji.name)) name = FirstName(*e);
-            ImGui::SetTooltip(":%s:", name.c_str());
+            // Who: names as Discord lists them, the rest counted.
+            const Reactors& who = reactors(m, r);
+            std::string people;
+            if (who.loading && who.users.empty()) {
+                people = "...";
+            } else if (!who.failed) {
+                const size_t kShown = 15;
+                size_t shown = std::min(who.users.size(), kShown);
+                for (size_t k = 0; k < shown; k++) {
+                    if (k) people += k + 1 == shown && size_t(r.count) <= shown ? " and " : ", ";
+                    people += store_.DisplayName(m.guildId, who.users[k]);
+                }
+                if (size_t(r.count) > shown && shown)
+                    people += " and " + std::to_string(r.count - int(shown)) + (r.count - int(shown) == 1 ? " other" : " others");
+            }
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8 * scale_, 6 * scale_));
+            ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(320 * scale_, FLT_MAX));
+            ImGui::BeginTooltip();
+            ImGui::PushTextWrapPos(300 * scale_);
+            ImGui::TextUnformatted((":" + name + ":").c_str());
+            if (!people.empty()) {
+                ImGui::PushFont(fonts_.regular, 14);
+                ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
+                ImGui::TextUnformatted(people.c_str());
+                ImGui::PopStyleColor();
+                ImGui::PopFont();
+            }
+            ImGui::PopTextWrapPos();
+            ImGui::EndTooltip();
+            ImGui::PopStyleVar();
         }
         if (clicked && canReact && !m.pending) react(m.channelId, m.id, r.emoji, !r.me);
         cx += pw + gap;

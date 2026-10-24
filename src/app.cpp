@@ -195,6 +195,7 @@ void App::SaveWindow() {
 
 void App::signIn(const std::string& token) {
     generation_++;
+    reactors_.clear();
     config_.token = token;
     SaveConfig(config_);
     loginError_.clear();
@@ -206,6 +207,7 @@ void App::signIn(const std::string& token) {
 
 void App::signOut() {
     generation_++;
+    reactors_.clear();
     dropVoice();
     gateway_->Stop();
     video_->Stop();
@@ -1112,6 +1114,39 @@ void App::react(uint64_t channel, uint64_t id, const Emoji& e, bool add) {
     std::string path = "/channels/" + IdString(channel) + "/messages/" + IdString(id) + "/reactions/" + code +
                        "/@me?location=Message&type=0";
     sender_->Run([api, path, add] { api->Call(add ? "PUT" : "DELETE", path); });
+}
+
+const App::Reactors& App::reactors(const Message& m, const Reaction& r) {
+    const Emoji& e = r.emoji;
+    std::string code = e.id ? UrlEncode(e.name + ":" + IdString(e.id)) : UrlEncode(e.name);
+    std::string key = IdString(m.id) + "/" + code;
+    Reactors& rs = reactors_[key];
+    if (rs.loading || rs.count == r.count || m.pending) return rs;
+    rs.loading = true;
+    rs.failed = false;
+    int count = r.count;
+    Api* api = api_.get();
+    std::string path = "/channels/" + IdString(m.channelId) + "/messages/" + IdString(m.id) + "/reactions/" + code +
+                       "?limit=100&type=0";
+    fetcher_->Run([this, api, path, key, count] {
+        HttpResult res = api->Call("GET", path);
+        post([this, res, key, count] {
+            Reactors& rs = reactors_[key];
+            rs.loading = false;
+            json list = json::parse(res.body, nullptr, false);
+            if (!res.ok() || !list.is_array()) {
+                rs.failed = true;
+                rs.count = count;  // don't keep asking while it's hovered
+                return;
+            }
+            store_.ReadUsers(list);
+            rs.users.clear();
+            for (const auto& u : list)
+                if (u.is_object() && u.contains("id")) rs.users.push_back(ParseId(u["id"]));
+            rs.count = count;
+        });
+    });
+    return rs;
 }
 
 void App::attachFile(const std::wstring& path) {
