@@ -393,6 +393,26 @@ static void testMessages() {
         CHECK_EQ(cm.command->name, std::string("weather today"));
     }
     CHECK(!s.ParseMessage(message("731", "201", "2", "plain")).command.has_value());
+
+    // A link preview made of components reads as an ordinary embed.
+    json link = message("732", "201", "2", "https://example.org/wiki/Thing");
+    json media = {{"url", "https://example.org/a.png"}, {"proxy_url", "https://proxy/a.png"}, {"width", 500}, {"height", 333}};
+    link["embeds"] = json::array({{{"type", "components"},
+                                   {"url", "https://example.org/wiki/Thing"},
+                                   {"components", json::array({{{"type", 17},
+                                                                {"accent_color", nullptr},
+                                                                {"components", json::array({
+                                                                    {{"type", 10}, {"content", "### [Thing](https://example.org)\n\nAbout it."}},
+                                                                    {{"type", 12}, {"items", json::array({{{"media", media}}})}},
+                                                                })}}})}}});
+    Message lm = s.ParseMessage(link);
+    CHECK_EQ(lm.embeds.size(), size_t(1));
+    if (!lm.embeds.empty()) {
+        CHECK_EQ(lm.embeds[0].description, std::string("### [Thing](https://example.org)\n\nAbout it."));
+        CHECK_EQ(lm.embeds[0].image.proxyUrl, std::string("https://proxy/a.png"));
+        CHECK_EQ(lm.embeds[0].image.width, 500);
+        CHECK(!lm.embeds[0].hasColour);
+    }
 }
 
 static void testMentions() {

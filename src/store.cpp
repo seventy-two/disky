@@ -85,6 +85,40 @@ Media readMedia(const json& j) {
     return m;
 }
 
+// readComponents flattens an embed made of components (Discord's newer
+// link previews, e.g. Wikipedia's: a container of markdown text and an
+// image gallery) into the plain embed fields that are drawn.
+void readComponents(const json& list, Embed& em) {
+    for (const auto& c : list) {
+        if (!c.is_object()) continue;
+        switch (num(c, "type")) {
+        case 17:  // container
+            if (c.contains("accent_color") && c["accent_color"].is_number()) {
+                em.colour = c["accent_color"].get<uint32_t>();
+                em.hasColour = true;
+            }
+            readComponents(arr(c, "components"), em);
+            break;
+        case 9:  // section: text, with a thumbnail beside it
+            readComponents(arr(c, "components"), em);
+            if (auto a = c.find("accessory"); a != c.end() && a->is_object()) readComponents(json::array({*a}), em);
+            break;
+        case 10:  // text display
+            if (!em.description.empty()) em.description += "\n\n";
+            em.description += str(c, "content");
+            break;
+        case 11:  // thumbnail
+            if (em.thumbnail.proxyUrl.empty())
+                if (auto m = c.find("media"); m != c.end()) em.thumbnail = readMedia(*m);
+            break;
+        case 12:  // media gallery: the first picture
+            for (const auto& it : arr(c, "items"))
+                if (auto m = it.find("media"); em.image.proxyUrl.empty() && m != it.end()) em.image = readMedia(*m);
+            break;
+        }
+    }
+}
+
 Emoji readEmoji(const json& j) {
     Emoji e;
     if (!j.is_object()) return e;
@@ -508,6 +542,7 @@ Message Store::ParseMessage(const json& j) {
         if (auto p = e.find("image"); p != e.end()) em.image = readMedia(*p);
         if (auto p = e.find("video"); p != e.end()) em.video = readMedia(*p);
         for (const auto& f : arr(e, "fields")) em.fields.push_back({str(f, "name"), str(f, "value"), flag(f, "inline")});
+        readComponents(arr(e, "components"), em);
         m.embeds.push_back(std::move(em));
     }
     for (const auto& r : arr(j, "reactions")) {
