@@ -47,6 +47,11 @@ inline constexpr const char* Dismiss = "\xEE\x9C\x91";  // U+E711
 inline constexpr const char* List = "\xEE\xA3\xBD";  // U+E8FD BulletedList
 inline constexpr const char* Down = "\xEE\x9C\x8D";  // U+E70D ChevronDown
 inline constexpr const char* Bell = "\xEE\xAA\x8F";  // U+EA8F Ringer
+inline constexpr const char* Speaker = "\xEE\xA6\x92";  // U+E992 Volume0, no waves
+inline constexpr const char* MicOff = "\xEE\xB1\x94";  // U+EC54
+inline constexpr const char* Headphone = "\xEE\x9F\xB6";  // U+E7F6
+inline constexpr const char* Video = "\xEE\x9C\x94";  // U+E714
+inline constexpr const char* HangUp = "\xEE\x9D\xB8";  // U+E778
 inline constexpr const char* Hash = "#";
 }  // namespace icon
 

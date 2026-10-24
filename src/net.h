@@ -78,9 +78,11 @@ public:
 
     bool Connect(const std::string& url, const Headers& headers, std::string& error);
     bool Send(std::string_view text);
+    bool SendBinary(std::string_view bytes);
     // Receive waits for a whole message. It returns false when the
     // connection closes or fails, with the close code if the server sent one.
-    bool Receive(std::string& message, std::string& error, USHORT* closeCode);
+    // binary, if given, says whether the message was binary rather than text.
+    bool Receive(std::string& message, std::string& error, USHORT* closeCode, bool* binary = nullptr);
     // Abort drops the connection, making a Receive in progress return.
     void Abort();
     // Close says goodbye politely, then drops the connection.

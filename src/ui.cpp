@@ -44,7 +44,8 @@ ImU32 statusColour(const std::string& s) {
 bool App::Busy() const {
     auto playing = [](const std::unique_ptr<VideoPlayer>& v) { return v && v->Active() && !v->Paused() && !v->Ended(); };
     // An autocomplete waiting for typing to pause needs the frame that asks.
-    return playing(video_) || playing(gif_) || (images_ && images_->Animating()) || acAsked_ != acTyped_;
+    return playing(video_) || playing(gif_) || (images_ && images_->Animating()) || acAsked_ != acTyped_ ||
+           (voice_ && voice_->AnySpeaking());
 }
 
 bool App::InCaption(float x, float y) const {
@@ -81,16 +82,20 @@ void App::Frame() {
     } else {
         // The columns either side are shown or hidden from the title bar.
         float sideW = config_.channels ? 240 * scale_ : 0;
+        float voiceW = guild_ && config_.voice ? 200 * scale_ : 0;
         bool hasMembers = channel_ && (guild_ || (store_.channels.count(channel_) && store_.channels[channel_].type == chan::GroupDM));
         float memW = hasMembers && config_.members && w > 900 * scale_ ? 200 * scale_ : 0;
         if (sideW > 0) sidebar(0, top, sideW - 1, h);
-        chat(sideW, top, w - sideW - memW, h);
+        if (voiceW > 0) voiceList(sideW, top, voiceW - 1, h);
+        chat(sideW + voiceW, top, w - sideW - voiceW - memW, h);
         if (memW > 0) memberList(w - memW + 1, top, memW - 1, h);
         // Lines between the columns, in the pixel left between them, so the
         // greys don't run together.
         ImDrawList* dl = ImGui::GetWindowDrawList();
         ImVec2 o = ImGui::GetWindowPos();
         if (sideW > 0) dl->AddRectFilled(ImVec2(o.x + sideW - 1, o.y + top), ImVec2(o.x + sideW, o.y + top + h), U32(c.border));
+        if (voiceW > 0)
+            dl->AddRectFilled(ImVec2(o.x + sideW + voiceW - 1, o.y + top), ImVec2(o.x + sideW + voiceW, o.y + top + h), U32(c.border));
         if (memW > 0)
             dl->AddRectFilled(ImVec2(o.x + w - memW, o.y + top), ImVec2(o.x + w - memW + 1, o.y + top + h), U32(c.border));
         serverMenu();
@@ -129,6 +134,19 @@ void App::titleBar() {
             SaveConfig(config_);
         }
         left += 36 * scale_;
+        if (guild_) {
+            // The speaker gets its waves, in green, while anyone's talking
+            // in one of the server's voice channels.
+            int inVoice = store_.VoiceCount(guild_);
+            std::string tip = std::string(config_.voice ? "Hide" : "Show") + " the voice channels" +
+                              (inVoice ? " (" + std::to_string(inVoice) + " in voice)" : "");
+            if (barToggle("voice", inVoice ? icon::Volume : icon::Speaker, ImVec2(o.x + left, o.y), config_.voice,
+                          tip.c_str(), inVoice ? U32(Colours().good) : 0)) {
+                config_.voice = !config_.voice;
+                SaveConfig(config_);
+            }
+            left += 36 * scale_;
+        }
     } else {
         ImGui::PushFont(fonts_.semibold, kSmall);
         dl->AddText(ImVec2(o.x + 12 * scale_, o.y + ty), U32(c.muted), "disky");
@@ -571,7 +589,7 @@ void App::serverMenu() {
     ImGui::PopStyleVar(2);
 }
 
-bool App::barToggle(const char* id, const char* glyph, ImVec2 a, bool on, const char* tip) {
+bool App::barToggle(const char* id, const char* glyph, ImVec2 a, bool on, const char* tip, ImU32 tint) {
     const Palette& c = Colours();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     ImVec2 o = ImGui::GetWindowPos();
@@ -586,7 +604,7 @@ bool App::barToggle(const char* id, const char* glyph, ImVec2 a, bool on, const 
     }
     ImGui::PushFont(fonts_.regular, 14);
     ImVec2 sz = ImGui::CalcTextSize(glyph);
-    dl->AddText(ImVec2(a.x + (w - sz.x) / 2, a.y + (h - sz.y) / 2), U32(hov || on ? c.heading : c.muted), glyph);
+    dl->AddText(ImVec2(a.x + (w - sz.x) / 2, a.y + (h - sz.y) / 2), tint ? tint : U32(hov || on ? c.heading : c.muted), glyph);
     ImGui::PopFont();
     return pressed;
 }
@@ -669,6 +687,188 @@ void App::channelList(float w) {
         if (hov && !ch.topic.empty()) ImGui::SetItemTooltip("%s", ch.topic.substr(0, 200).c_str());
         if (clicked) open(guild_, id);
     }
+}
+
+void App::voiceList(float x, float y, float w, float h) {
+    ImageFor images = [this](const std::string& u) { return texture(u); };
+    const Palette& c = Colours();
+    ImGui::SetCursorPos(ImVec2(x, y));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, c.sidebar);
+    float panel = voiceChannel_ ? 52 * scale_ : 0;
+    ImGui::BeginChild("voice", ImVec2(w, h), 0, ImGuiWindowFlags_NoScrollbar);
+    ImGui::BeginChild("voicelist", ImVec2(w, h - panel), 0);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    float row = 24 * scale_, side = 6 * scale_, av = 18 * scale_, personRow = 24 * scale_;
+    ImGui::Dummy(ImVec2(1, 8 * scale_));
+    auto channels = store_.VoiceChannels(guild_);
+    if (channels.empty()) {
+        ImGui::SetCursorPosX(side + 6 * scale_);
+        ImGui::TextDisabled("No voice channels");
+    }
+    for (uint64_t id : channels) {
+        const Channel& ch = store_.channels[id];
+        if (ch.type == chan::Category) {
+            ImGui::Dummy(ImVec2(1, 6 * scale_));
+            std::string name = ch.name;
+            std::transform(name.begin(), name.end(), name.begin(), ::toupper);
+            ImGui::SetCursorPosX(side + 6 * scale_);
+            ImGui::PushFont(fonts_.semibold, 11);
+            ImGui::TextDisabled("%s", name.c_str());
+            ImGui::PopFont();
+            continue;
+        }
+        auto people = store_.InVoice(id);
+        ImGui::SetCursorPosX(side);
+        ImVec2 a = ImGui::GetCursorScreenPos(), b(a.x + w - side * 2, a.y + row);
+        ImGui::PushID(int(id % 0x7FFFFFFF));
+        bool clicked = ImGui::InvisibleButton("vc", ImVec2(w - side * 2, row));
+        bool hov = ImGui::IsItemHovered();
+        ImGui::PopID();
+        bool here = id == voiceChannel_;
+        if (hov || here) dl->AddRectFilled(a, b, U32(here ? c.selected : c.hover));
+        if (hov) ImGui::SetTooltip("%s", here ? "You're here" : "Join, to listen");
+        if (clicked && !here) joinVoice(guild_, id);
+        ImU32 col = !people.empty() ? U32(c.heading) : hov ? U32(c.text) : U32(c.muted);
+        ImGui::PushFont(fonts_.regular, 14);
+        float iy = a.y + (row - ImGui::GetFontSize()) / 2;
+        dl->AddText(ImVec2(a.x + 6 * scale_, iy), U32(people.empty() ? c.muted : c.good), people.empty() ? icon::Speaker : icon::Volume);
+        ImGui::PopFont();
+        ImGui::PushFont(people.empty() ? fonts_.regular : fonts_.semibold, 14);
+        Label(dl, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(a.x + 26 * scale_, a.y + (row - ImGui::GetFontSize()) / 2), col,
+              ch.name, b.x - 4 * scale_ - (a.x + 26 * scale_), images);
+        ImGui::PopFont();
+        for (const VoiceState& v : people) {
+            ImGui::SetCursorPosX(side + 22 * scale_);
+            ImVec2 pa = ImGui::GetCursorScreenPos(), pb(a.x + w - side * 2, pa.y + personRow);
+            ImGui::PushID(int(v.userId % 0x7FFFFFFF));
+            ImGui::InvisibleButton("who", ImVec2(pb.x - pa.x, personRow));
+            bool whoHov = ImGui::IsItemHovered();
+            if (ImGui::IsItemClicked(ImGuiMouseButton_Right) && id == voiceChannel_ && v.userId != store_.me) {
+                volumeFor_ = v.userId;
+                ImGui::OpenPopup("volume");
+            }
+            ImGui::PopID();
+            if (whoHov && id == voiceChannel_ && v.userId != store_.me) ImGui::SetTooltip("Right-click for their volume");
+            ImVec2 ap(pa.x, pa.y + (personRow - av) / 2);
+            avatar(v.userId, guild_, ap, av);
+            // A green ring while they're talking (only heard in our call).
+            if (voice_ && id == voiceChannel_ && voice_->Speaking(v.userId)) {
+                float t = std::max(1.5f, 2 * scale_);
+                dl->AddRect(ImVec2(ap.x - t / 2, ap.y - t / 2), ImVec2(ap.x + av + t / 2, ap.y + av + t / 2), U32(c.good), 0, 0, t);
+            }
+            // What they've switched off or on, from the right: deafened,
+            // muted, camera, live.
+            float right = pb.x - 4 * scale_;
+            auto glyph = [&](const char* g, ImU32 colour) {
+                ImGui::PushFont(fonts_.regular, 12);
+                ImVec2 sz = ImGui::CalcTextSize(g);
+                right -= sz.x;
+                dl->AddText(ImVec2(right, pa.y + (personRow - sz.y) / 2), colour, g);
+                right -= 4 * scale_;
+                ImGui::PopFont();
+            };
+            if (v.deaf || v.selfDeaf) glyph(icon::Headphone, v.deaf ? U32(c.dnd) : U32(c.muted));
+            if (v.mute || v.selfMute || v.suppress) glyph(icon::MicOff, v.mute ? U32(c.dnd) : U32(c.muted));
+            if (v.video) glyph(icon::Video, U32(c.muted));
+            if (v.streaming) {
+                ImGui::PushFont(fonts_.bold, 10);
+                ImVec2 sz = ImGui::CalcTextSize("LIVE");
+                float bw = sz.x + 6 * scale_, bh = sz.y + 2 * scale_;
+                right -= bw;
+                ImVec2 ba(right, pa.y + (personRow - bh) / 2);
+                dl->AddRectFilled(ba, ImVec2(ba.x + bw, ba.y + bh), U32(c.dnd));
+                dl->AddText(ImVec2(ba.x + 3 * scale_, ba.y + scale_), IM_COL32_WHITE, "LIVE");
+                right -= 4 * scale_;
+                ImGui::PopFont();
+            }
+            ImGui::PushFont(fonts_.regular, 13);
+            float tx = pa.x + av + 8 * scale_;
+            Label(dl, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(tx, pa.y + (personRow - ImGui::GetFontSize()) / 2), userColour(guild_, v.userId),
+                  store_.DisplayName(guild_, v.userId), right - tx, images);
+            ImGui::PopFont();
+        }
+    }
+    ImGui::Dummy(ImVec2(1, 8 * scale_));
+    ImGui::PushID("vol");
+    if (ImGui::BeginPopup("volume")) {
+        std::string key = IdString(volumeFor_);
+        float v = config_.voiceVolumes.count(key) ? config_.voiceVolumes[key] : 1.0f;
+        ImGui::TextDisabled("%s", store_.DisplayName(voiceGuild_, volumeFor_).c_str());
+        int pct = int(v * 100 + 0.5f);
+        ImGui::SetNextItemWidth(180 * scale_);
+        if (ImGui::SliderInt("##v", &pct, 0, 200, "%d%%")) {
+            v = pct / 100.0f;
+            if (pct == 100)
+                config_.voiceVolumes.erase(key);
+            else
+                config_.voiceVolumes[key] = v;
+            if (voice_) voice_->SetVolume(volumeFor_, v);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit()) SaveConfig(config_);
+        ImGui::EndPopup();
+    }
+    ImGui::PopID();
+    ImGui::EndChild();
+    if (voiceChannel_) voicePanel(0, h - panel, w);
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+}
+
+void App::voicePanel(float x, float y, float w) {
+    const Palette& c = Colours();
+    float h = 52 * scale_;
+    ImGui::SetCursorPos(ImVec2(x, y));
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), U32(c.rail, 0.6f));
+    auto state = voice_ ? voice_->GetState() : VoiceConnection::State::Connecting;
+    std::string line = state == VoiceConnection::State::Connected ? "Voice connected"
+                       : state == VoiceConnection::State::Failed  ? "Voice failed"
+                                                                   : "Connecting…";
+    ImU32 col = U32(state == VoiceConnection::State::Connected ? c.good : state == VoiceConnection::State::Failed ? c.dnd : c.idle);
+    float bs = 28 * scale_, pad = 8 * scale_;
+    float textW = w - pad * 2 - bs * 2 - 4 * scale_;
+    ImGui::PushFont(fonts_.semibold, 13);
+    dl->AddText(ImVec2(a.x + pad, a.y + 8 * scale_), col, line.c_str());
+    ImGui::PopFont();
+    ImGui::SetCursorScreenPos(ImVec2(a.x + pad, a.y + 6 * scale_));
+    ImGui::InvisibleButton("vstatus", ImVec2(textW, 20 * scale_));
+    if (ImGui::IsItemHovered()) {
+        std::string tip;
+        if (voice_ && state == VoiceConnection::State::Failed) tip = voice_->Error();
+        else if (voice_ && state == VoiceConnection::State::Connected) {
+            tip = voice_->Ping() ? std::to_string(voice_->Ping()) + "ms to the voice server" : "Connected";
+            tip += voice_->Encrypted() ? "\nEnd-to-end encrypted" : "\nNot end-to-end encrypted";
+        } else tip = "Joining the call";
+        tip += "\nListening only: your mic stays off";
+        ImGui::SetTooltip("%s", tip.c_str());
+    }
+    std::string where = store_.ChannelName(voiceChannel_);
+    if (auto g = store_.guilds.find(voiceGuild_); g != store_.guilds.end()) where += " / " + g->second.name;
+    ImGui::PushFont(fonts_.regular, 12);
+    ImageFor images = [this](const std::string& u) { return texture(u); };
+    Label(dl, ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(a.x + pad, a.y + 28 * scale_), U32(c.muted), where, textW, images);
+    ImGui::PopFont();
+    // Deafen and leave.
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+    ImGui::PushFont(fonts_.regular, 15);
+    ImGui::SetCursorScreenPos(ImVec2(a.x + w - pad - bs * 2 - 4 * scale_, a.y + (h - bs) / 2));
+    if (config_.deafened) ImGui::PushStyleColor(ImGuiCol_Text, c.dnd);
+    if (ImGui::Button(icon::Headphone, ImVec2(bs, bs))) {
+        config_.deafened = !config_.deafened;
+        if (voice_) voice_->SetDeafened(config_.deafened);
+        sendVoiceState();
+        SaveConfig(config_);
+    }
+    if (config_.deafened) ImGui::PopStyleColor();
+    ImGui::SetItemTooltip("%s", config_.deafened ? "Undeafen" : "Deafen");
+    ImGui::SameLine(0, 4 * scale_);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, c.dnd);
+    if (ImGui::Button(icon::HangUp, ImVec2(bs, bs))) leaveVoice();
+    ImGui::PopStyleColor();
+    ImGui::SetItemTooltip("Leave");
+    ImGui::PopFont();
+    ImGui::PopStyleColor();
 }
 
 void App::dmList(float w) {

@@ -25,6 +25,7 @@
 #include "store.h"
 #include "theme.h"
 #include "video.h"
+#include "voice.h"
 
 namespace disky {
 
@@ -79,6 +80,13 @@ private:
     void runCommand(const Command& c, size_t rest);
     json interaction(int type, const Command& c, const json& options, const std::string& nonce) const;
     void requestAutocomplete(const Command& c, const std::string& options, const std::string& option);
+    // Voice: joining a channel (or moving to another), leaving, and
+    // connecting once Discord's said which voice server to use.
+    void joinVoice(uint64_t guild, uint64_t channel);
+    void leaveVoice();
+    void sendVoiceState();
+    void connectVoice();
+    void dropVoice();
     void deleteMessage(uint64_t channel, uint64_t id);
     void react(uint64_t channel, uint64_t id, const Emoji& e, bool add);
     void attachFile(const std::wstring& path);
@@ -99,10 +107,16 @@ private:
     float mentionBadge(ImDrawList* dl, int count, float right, float y);
     // barToggle is an icon button in the title bar that shows or hides a
     // column; on draws it lit.
-    bool barToggle(const char* id, const char* glyph, ImVec2 at, bool on, const char* tip);
+    bool barToggle(const char* id, const char* glyph, ImVec2 at, bool on, const char* tip, ImU32 tint = 0);
     void sidebar(float x, float y, float w, float h);
     void channelList(float w);
     void dmList(float w);
+    // voiceList is the open server's voice channels and who's in them, in
+    // a column of its own beside the channel list.
+    void voiceList(float x, float y, float w, float h);
+    // voicePanel is the bar under it while in a call: how it's going, and
+    // deafen and leave buttons.
+    void voicePanel(float x, float y, float w);
     void userPanel(float x, float y, float w);
     void chat(float x, float y, float w, float h);
     // channelHeader draws the open channel's name and topic in the title
@@ -286,6 +300,13 @@ private:
     std::string acTyped_, acAsked_, acNonce_, acPendingFor_, acFor_;
     double acTypedAt_ = 0;
     std::vector<CommandChoice> acChoices_;
+
+    // Voice: the channel we're in or joining (0 for none), what Discord's
+    // told us to connect with, and the connection.
+    uint64_t voiceGuild_ = 0, voiceChannel_ = 0;
+    std::string voiceSession_, voiceToken_, voiceEndpoint_;
+    std::unique_ptr<VoiceConnection> voice_;
+    uint64_t volumeFor_ = 0;  // whose volume the popup's for
 
     // Emoji picker: for a reaction (message set) or the composer.
     bool pickerOpen_ = false;

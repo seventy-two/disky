@@ -282,7 +282,19 @@ bool WebSocket::Send(std::string_view text) {
                                 DWORD(text.size())) == NO_ERROR;
 }
 
-bool WebSocket::Receive(std::string& message, std::string& error, USHORT* closeCode) {
+bool WebSocket::SendBinary(std::string_view bytes) {
+    std::lock_guard<std::mutex> send(sendMu_);
+    HINTERNET ws;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        ws = ws_;
+    }
+    if (!ws) return false;
+    return WinHttpWebSocketSend(ws, WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE, (PVOID)bytes.data(),
+                                DWORD(bytes.size())) == NO_ERROR;
+}
+
+bool WebSocket::Receive(std::string& message, std::string& error, USHORT* closeCode, bool* binary) {
     message.clear();
     if (closeCode) *closeCode = 0;
     char buf[65536];
@@ -317,8 +329,10 @@ bool WebSocket::Receive(std::string& message, std::string& error, USHORT* closeC
             error = "message too large";
             return false;
         }
-        if (type == WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE || type == WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE)
+        if (type == WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE || type == WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE) {
+            if (binary) *binary = type == WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE;
             return true;
+        }
     }
 }
 

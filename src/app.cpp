@@ -136,6 +136,7 @@ App::App(HWND hwnd, ID3D11Device* device, std::function<void()> wake)
 }
 
 App::~App() {
+    leaveVoice();
     SaveConfig(config_);
     if (gateway_) gateway_->Stop();
     if (remote_) remote_->Stop();
@@ -198,6 +199,7 @@ void App::signIn(const std::string& token) {
 
 void App::signOut() {
     generation_++;
+    dropVoice();
     gateway_->Stop();
     video_->Stop();
     gif_->Stop();
@@ -215,6 +217,59 @@ void App::signOut() {
     commandsLoading_.clear();
     remote_ = std::make_unique<RemoteAuth>(identity_, wake_);
     remote_->Start();
+}
+
+void App::joinVoice(uint64_t guild, uint64_t channel) {
+    if (voiceChannel_ == channel && voice_ && voice_->GetState() != VoiceConnection::State::Failed) return;
+    if (voice_) dropVoice();
+    voiceGuild_ = guild;
+    voiceChannel_ = channel;
+    voiceSession_.clear();
+    voiceToken_.clear();
+    voiceEndpoint_.clear();
+    sendVoiceState();
+}
+
+void App::leaveVoice() {
+    if (!voiceChannel_) return;
+    gateway_->Send(4, {{"guild_id", IdString(voiceGuild_)}, {"channel_id", nullptr}, {"self_mute", true}, {"self_deaf", config_.deafened}});
+    dropVoice();
+}
+
+void App::sendVoiceState() {
+    // Listening only, so always muted.
+    gateway_->Send(4, {{"guild_id", IdString(voiceGuild_)},
+                       {"channel_id", IdString(voiceChannel_)},
+                       {"self_mute", true},
+                       {"self_deaf", config_.deafened},
+                       {"self_video", false}});
+}
+
+void App::connectVoice() {
+    if (voice_ || !voiceChannel_ || voiceSession_.empty() || voiceToken_.empty() || voiceEndpoint_.empty()) return;
+    VoiceConnection::Params p;
+    p.userId = store_.me;
+    p.guildId = voiceGuild_;
+    p.channelId = voiceChannel_;
+    p.sessionId = voiceSession_;
+    p.token = voiceToken_;
+    p.endpoint = voiceEndpoint_;
+    p.userAgent = identity_.userAgent;
+    voice_ = std::make_unique<VoiceConnection>(p, wake_);
+    voice_->SetDeafened(config_.deafened);
+    for (const auto& [id, v] : config_.voiceVolumes) voice_->SetVolume(std::strtoull(id.c_str(), nullptr, 10), v);
+}
+
+void App::dropVoice() {
+    voiceChannel_ = voiceGuild_ = 0;
+    voiceSession_.clear();
+    voiceToken_.clear();
+    voiceEndpoint_.clear();
+    // Closing waits on its threads, so not on this one.
+    if (voice_) {
+        std::shared_ptr<VoiceConnection> old(voice_.release());
+        fetcher_->Run([old]() mutable { old.reset(); });
+    }
 }
 
 void App::Pump() {
@@ -272,11 +327,13 @@ void shape(const json& j, std::string& out, int depth, const std::string& indent
 }  // namespace
 
 void App::onDispatch(const Dispatch& d) {
-    if (d.type == "READY" && GetEnvironmentVariableW(L"DISKY_SHAPE", nullptr, 0)) {
+    if ((d.type == "READY" || d.type == "READY_SUPPLEMENTAL") && GetEnvironmentVariableW(L"DISKY_SHAPE", nullptr, 0)) {
         std::string out;
         shape(d.data, out, 0, "");
         wchar_t path[MAX_PATH];
-        ExpandEnvironmentStringsW(L"%APPDATA%\\disky\\ready-shape.txt", path, MAX_PATH);
+        ExpandEnvironmentStringsW(d.type == "READY" ? L"%APPDATA%\\disky\\ready-shape.txt"
+                                                    : L"%APPDATA%\\disky\\ready-supplemental-shape.txt",
+                                  path, MAX_PATH);
         std::ofstream(path, std::ios::binary) << out;
     }
     if (d.type.empty()) {
@@ -328,8 +385,40 @@ void App::onDispatch(const Dispatch& d) {
         if (commandNonces_.empty()) commandStatus_.clear();
         return;
     }
+    if (d.type == "VOICE_STATE_UPDATE" && ParseId(d.data.value("user_id", json())) == store_.me && voiceChannel_) {
+        uint64_t ch = ParseId(d.data.value("channel_id", json()));
+        if (d.data.value("session_id", "") != sessionId_ || !ch) {
+            // Left, removed, or joined from another device, which takes over.
+            dropVoice();
+        } else if (ch != voiceChannel_) {
+            // Moved: same server, new channel, so a new call.
+            voiceChannel_ = ch;
+            voiceGuild_ = ParseId(d.data.value("guild_id", json()));
+            voice_.reset();
+            connectVoice();
+        } else {
+            voiceSession_ = d.data.value("session_id", "");
+            connectVoice();
+        }
+    }
+    if (d.type == "VOICE_SERVER_UPDATE" && voiceChannel_ && ParseId(d.data.value("guild_id", json())) == voiceGuild_) {
+        // A null endpoint means the server's moving; another update follows.
+        voiceToken_ = d.data.value("token", "");
+        voiceEndpoint_ = d.data["endpoint"].is_string() ? d.data["endpoint"].get<std::string>() : "";
+        if (voice_) {
+            std::shared_ptr<VoiceConnection> old(voice_.release());
+            fetcher_->Run([old]() mutable { old.reset(); });
+        }
+        connectVoice();
+    }
     auto effects = store_.Apply(d.type, d.data);
     if (d.type == "READY") {
+        // A new session ends any call the old one had: join again.
+        if (voiceChannel_) {
+            uint64_t g = voiceGuild_, c = voiceChannel_;
+            dropVoice();
+            joinVoice(g, c);
+        }
         ready_ = true;
         sessionId_ = d.data.value("session_id", "");
         commandIndex_.clear();

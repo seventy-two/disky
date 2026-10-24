@@ -391,6 +391,32 @@ void Store::readGuild(const json& j) {
         for (const auto& e : arr(j, "emojis")) g.emojis.push_back(readEmoji(e));
     }
     for (const auto& m : arr(j, "members")) readMember(gid, m);
+    if (j.contains("voice_states")) {
+        g.voice.clear();
+        for (const auto& v : arr(j, "voice_states")) readVoiceState(gid, v);
+    }
+}
+
+void Store::readVoiceState(Snowflake guildId, const json& j) {
+    Guild& g = guilds[guildId];
+    Snowflake uid = id(j, "user_id");
+    if (!uid) return;
+    if (auto m = j.find("member"); m != j.end() && m->is_object()) readMember(guildId, *m);
+    Snowflake cid = id(j, "channel_id");
+    if (!cid) {
+        g.voice.erase(uid);
+        return;
+    }
+    VoiceState& v = g.voice[uid];
+    v.userId = uid;
+    v.channelId = cid;
+    v.selfMute = flag(j, "self_mute");
+    v.selfDeaf = flag(j, "self_deaf");
+    v.mute = flag(j, "mute");
+    v.deaf = flag(j, "deaf");
+    v.streaming = flag(j, "self_stream");
+    v.video = flag(j, "self_video");
+    v.suppress = flag(j, "suppress");
 }
 
 void Store::readGuildSettings(const json& e) {
@@ -574,6 +600,13 @@ std::vector<Effect> Store::Apply(const std::string& type, const json& d) {
         fx.push_back({Effect::Type::Ready});
     } else if (type == "READY_SUPPLEMENTAL") {
         const json& gs = arr(d, "guilds");
+        // Who's in voice comes here, not in READY.
+        for (const auto& g : gs) {
+            Snowflake gid = id(g, "id");
+            if (!guilds.count(gid) || !g.contains("voice_states")) continue;
+            guilds[gid].voice.clear();
+            for (const auto& v : arr(g, "voice_states")) readVoiceState(gid, v);
+        }
         const json& merged = arr(d, "merged_members");
         for (size_t i = 0; i < merged.size() && i < gs.size(); i++)
             for (const auto& m : merged[i]) readMember(id(gs[i], "id"), m);
@@ -582,6 +615,8 @@ std::vector<Effect> Store::Apply(const std::string& type, const json& d) {
             for (const auto& g : arr(*p, "guilds"))
                 for (const auto& pr : g) presence[id(pr, "user_id")] = str(pr, "status");
         }
+    } else if (type == "VOICE_STATE_UPDATE") {
+        if (Snowflake gid = id(d, "guild_id"); gid && guilds.count(gid)) readVoiceState(gid, d);
     } else if (type == "GUILD_CREATE" || type == "GUILD_UPDATE") {
         readGuild(d);
     } else if (type == "GUILD_DELETE") {
@@ -965,6 +1000,33 @@ std::vector<Snowflake> Store::GuildsInOrder() const {
     return rest;
 }
 
+namespace {
+
+// listed puts a guild's channels in Discord's order: those outside a
+// category first, then each category (if it has any) with its own.
+std::vector<Snowflake> listed(std::vector<const Channel*> cats, std::vector<const Channel*> chans) {
+    auto order = [](const Channel* a, const Channel* b) {
+        return a->position != b->position ? a->position < b->position : a->id < b->id;
+    };
+    std::sort(cats.begin(), cats.end(), order);
+    std::sort(chans.begin(), chans.end(), order);
+    std::vector<Snowflake> out;
+    for (const Channel* t : chans)
+        if (!t->parentId) out.push_back(t->id);
+    for (const Channel* cat : cats) {
+        bool any = false;
+        for (const Channel* t : chans)
+            if (t->parentId == cat->id) {
+                if (!any) out.push_back(cat->id);
+                any = true;
+                out.push_back(t->id);
+            }
+    }
+    return out;
+}
+
+}  // namespace
+
 std::vector<Snowflake> Store::GuildChannels(Snowflake guildId) const {
     auto g = guilds.find(guildId);
     if (g == guilds.end()) return {};
@@ -977,24 +1039,53 @@ std::vector<Snowflake> Store::GuildChannels(Snowflake guildId) const {
         else if (c->second.IsText() && CanView(cid))
             texts.push_back(&c->second);
     }
-    auto order = [](const Channel* a, const Channel* b) {
-        return a->position != b->position ? a->position < b->position : a->id < b->id;
-    };
-    std::sort(cats.begin(), cats.end(), order);
-    std::sort(texts.begin(), texts.end(), order);
-    std::vector<Snowflake> out;
-    for (const Channel* t : texts)
-        if (!t->parentId) out.push_back(t->id);
-    for (const Channel* cat : cats) {
-        bool any = false;
-        for (const Channel* t : texts)
-            if (t->parentId == cat->id) {
-                if (!any) out.push_back(cat->id);
-                any = true;
-                out.push_back(t->id);
-            }
+    return listed(cats, texts);
+}
+
+std::vector<Snowflake> Store::VoiceChannels(Snowflake guildId) const {
+    auto g = guilds.find(guildId);
+    if (g == guilds.end()) return {};
+    std::vector<const Channel*> cats, voices;
+    for (Snowflake cid : g->second.channels) {
+        auto c = channels.find(cid);
+        if (c == channels.end()) continue;
+        if (c->second.type == chan::Category)
+            cats.push_back(&c->second);
+        else if (c->second.IsVoice() && CanView(cid))
+            voices.push_back(&c->second);
     }
+    return listed(cats, voices);
+}
+
+std::vector<VoiceState> Store::InVoice(Snowflake channelId) const {
+    std::vector<VoiceState> out;
+    auto c = channels.find(channelId);
+    if (c == channels.end()) return out;
+    auto g = guilds.find(c->second.guildId);
+    if (g == guilds.end()) return out;
+    for (const auto& [uid, v] : g->second.voice)
+        if (v.channelId == channelId) out.push_back(v);
+    Snowflake gid = c->second.guildId;
+    std::vector<std::pair<std::string, VoiceState>> named;
+    for (const auto& v : out) {
+        std::string n = DisplayName(gid, v.userId);
+        std::transform(n.begin(), n.end(), n.begin(), [](unsigned char ch) { return char(std::tolower(ch)); });
+        named.push_back({n, v});
+    }
+    std::sort(named.begin(), named.end(), [](const auto& a, const auto& b) {
+        return a.first != b.first ? a.first < b.first : a.second.userId < b.second.userId;
+    });
+    out.clear();
+    for (auto& [n, v] : named) out.push_back(v);
     return out;
+}
+
+int Store::VoiceCount(Snowflake guildId) const {
+    auto g = guilds.find(guildId);
+    if (g == guilds.end()) return 0;
+    int n = 0;
+    for (const auto& [uid, v] : g->second.voice) n += channels.count(v.channelId) > 0;
+    return n;
 }
 
 bool Store::ChannelMuted(Snowflake channelId) const {

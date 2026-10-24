@@ -79,6 +79,7 @@ struct Channel {
     Snowflake lastMessageId = 0;
     std::vector<Snowflake> recipients;  // DMs and group DMs, not including us
     bool IsText() const { return type == chan::Text || type == chan::News || type == chan::DM || type == chan::GroupDM; }
+    bool IsVoice() const { return type == chan::Voice || type == chan::Stage; }
     bool IsPrivate() const { return type == chan::DM || type == chan::GroupDM; }
 };
 
@@ -86,6 +87,14 @@ struct Member {
     Snowflake userId = 0;
     std::string nick, avatar;
     std::vector<Snowflake> roles;
+};
+
+// VoiceState is someone in a guild's voice channel.
+struct VoiceState {
+    Snowflake userId = 0, channelId = 0;
+    bool selfMute = false, selfDeaf = false, mute = false, deaf = false;  // mute/deaf: by a moderator
+    bool streaming = false, video = false;  // Go Live, camera
+    bool suppress = false;                  // a stage's audience
 };
 
 struct Emoji {
@@ -205,6 +214,7 @@ struct Guild {
     std::unordered_map<Snowflake, Member> members;
     std::vector<Emoji> emojis;
     std::map<std::string, MemberList> lists;  // by list ID
+    std::unordered_map<Snowflake, VoiceState> voice;  // who's in voice, by user
     bool muted = false;
     bool unavailable = false;
 };
@@ -280,6 +290,13 @@ public:
     // channels the user can see.
     std::vector<Snowflake> GuildChannels(Snowflake guildId) const;
 
+    // VoiceChannels is the same for voice and stage channels.
+    std::vector<Snowflake> VoiceChannels(Snowflake guildId) const;
+    // InVoice lists who's in a voice channel, by name.
+    std::vector<VoiceState> InVoice(Snowflake channelId) const;
+    // VoiceCount is how many are in a guild's voice channels.
+    int VoiceCount(Snowflake guildId) const;
+
     bool Unread(Snowflake channelId) const;
     int Mentions(Snowflake channelId) const;
     bool GuildUnread(Snowflake guildId) const;
@@ -303,6 +320,7 @@ private:
     void readGuild(const json& j);
     Channel readChannel(const json& j, Snowflake guildId);
     void readMember(Snowflake guildId, const json& j);
+    void readVoiceState(Snowflake guildId, const json& j);
     void readGuildSettings(const json& j);
     void readSettingsProto(const std::string& base64);
     void memberListUpdate(const json& d);

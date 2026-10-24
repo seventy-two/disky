@@ -1,11 +1,13 @@
 // Tests for the client's portable code. Build and run with build.bat, or on
 // Linux with the command in the README.
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 #include "../src/commands.h"
 #include "../src/gif.h"
 #include "../src/markdown.h"
+#include "../src/rtp.h"
 #include "../src/store.h"
 
 static int failures = 0;
@@ -90,7 +92,8 @@ static json readyFixture() {
           {"id": "204", "type": 2, "name": "voice", "position": 0, "parent_id": "200"},
           {"id": "205", "type": 4, "name": "Empty", "position": 1}
         ],
-        "emojis": [{"id": "300", "name": "pog"}]
+        "emojis": [{"id": "300", "name": "pog"}],
+        "voice_states": [{"user_id": "2", "channel_id": "204", "self_mute": true}]
       }],
       "merged_members": [[{"user_id": "1", "roles": ["102"]}]],
       "private_channels": [
@@ -132,6 +135,115 @@ static void testReady() {
     CHECK_EQ(dms.size(), size_t(2));
     if (dms.size() == 2) CHECK_EQ(dms[0], Snowflake(401));
     CHECK_EQ(s.Colour(100, 1), uint32_t(255));
+}
+
+static void testVoice() {
+    Store s;
+    s.Apply("READY", readyFixture());
+    // The voice channel, in its category; text channels left out.
+    auto list = s.VoiceChannels(100);
+    CHECK_EQ(list.size(), size_t(2));
+    if (list.size() == 2) {
+        CHECK_EQ(list[0], Snowflake(200));
+        CHECK_EQ(list[1], Snowflake(204));
+    }
+    CHECK_EQ(s.VoiceCount(100), 1);
+    auto in = s.InVoice(204);
+    CHECK_EQ(in.size(), size_t(1));
+    if (!in.empty()) CHECK(in[0].selfMute && !in[0].streaming);
+    // Someone joins and goes live; the friend leaves.
+    s.Apply("VOICE_STATE_UPDATE", json::parse(R"({"guild_id": "100", "channel_id": "204", "user_id": "3",
+        "self_stream": true, "member": {"user": {"id": "3", "username": "zed"}, "roles": []}})"));
+    s.Apply("VOICE_STATE_UPDATE", json::parse(R"({"guild_id": "100", "channel_id": null, "user_id": "2"})"));
+    in = s.InVoice(204);
+    CHECK_EQ(in.size(), size_t(1));
+    if (!in.empty()) CHECK(in[0].userId == 3 && in[0].streaming);
+    CHECK_EQ(s.DisplayName(100, 3), std::string("zed"));
+    s.Apply("VOICE_STATE_UPDATE", json::parse(R"({"guild_id": "100", "channel_id": null, "user_id": "3"})"));
+    CHECK_EQ(s.VoiceCount(100), 0);
+    // A user account gets who's in voice with READY_SUPPLEMENTAL.
+    s.Apply("READY_SUPPLEMENTAL", json::parse(R"({"guilds": [{"id": "100", "voice_states": [
+        {"user_id": "2", "channel_id": "204", "self_deaf": true, "self_video": true}]}]})"));
+    in = s.InVoice(204);
+    CHECK(in.size() == 1 && in[0].selfDeaf && in[0].video);
+}
+
+static void testRtp() {
+    // A header with one CSRC and a one-word extension, padding set.
+    std::string pk = {char(0xB1), char(0x78), 0x01, 0x02, 0, 0, 0x03, char(0xC0), 0x11, 0x22, 0x33, 0x44};
+    pk += std::string(4, 'c');                            // CSRC
+    pk += std::string{char(0xBE), char(0xDE), 0, 1};      // extension header: 1 word
+    pk += "body";                                         // ciphertext from here
+    std::string tagNonce = std::string(16, 't') + std::string{0, 0, 0, 7};
+    pk += tagNonce;
+    Rtp r;
+    CHECK(ParseRtp(reinterpret_cast<const uint8_t*>(pk.data()), pk.size(), &r));
+    CHECK_EQ(r.seq, uint16_t(0x0102));
+    CHECK_EQ(r.timestamp, uint32_t(960));
+    CHECK_EQ(r.ssrc, uint32_t(0x11223344));
+    CHECK_EQ(r.payloadType, uint8_t(0x78));
+    CHECK_EQ(r.header, size_t(20));
+    CHECK_EQ(r.extensionBytes, size_t(4));
+    Sealed s;
+    CHECK(SplitSealed(r, pk.size(), reinterpret_cast<const uint8_t*>(pk.data()), &s));
+    CHECK_EQ(s.cipher, size_t(20));
+    CHECK_EQ(s.cipherLen, size_t(4));
+    CHECK_EQ(int(s.nonce[3]), 7);
+    CHECK_EQ(int(s.nonce[4]), 0);
+    // Decrypted: the extension body, the audio, then two bytes of padding.
+    std::string plain = std::string("EXTN") + "opus" + std::string{0, 2};
+    CHECK(Unwrap(r, plain));
+    CHECK_EQ(plain, std::string("opus"));
+    // Too short to be RTP, or not version 2.
+    CHECK(!ParseRtp(reinterpret_cast<const uint8_t*>(pk.data()), 8, &r));
+    std::string v1 = pk;
+    v1[0] = 0x40;
+    CHECK(!ParseRtp(reinterpret_cast<const uint8_t*>(v1.data()), v1.size(), &r));
+
+    std::string h = RtpHeader(5, 960, 42);
+    CHECK_EQ(h.size(), size_t(12));
+    CHECK(ParseRtp(reinterpret_cast<const uint8_t*>(h.data()), h.size(), &r) && r.seq == 5 && r.ssrc == 42);
+
+    std::string d = DiscoveryRequest(42);
+    CHECK_EQ(d.size(), size_t(74));
+    std::string answer = d;
+    answer[1] = 2;
+    std::memcpy(&answer[8], "203.0.113.9", 11);
+    answer[72] = char(0xC3);
+    answer[73] = 0x50;
+    std::string ip;
+    uint16_t port = 0;
+    CHECK(ParseDiscovery(reinterpret_cast<const uint8_t*>(answer.data()), answer.size(), &ip, &port));
+    CHECK_EQ(ip, std::string("203.0.113.9"));
+    CHECK_EQ(port, uint16_t(50000));
+
+    int seq = 0, op = 0;
+    std::string payload;
+    CHECK(ParseVoiceBinary(std::string{0, 9, 25} + "xs", &seq, &op, &payload));
+    CHECK(seq == 9 && op == 25 && payload == "xs");
+    CHECK_EQ(VoiceBinary(26, "kp"), std::string{26} + "kp");
+
+    // Playout: holds back 60ms, conceals small gaps, drops late packets.
+    Playout p;
+    CHECK_EQ(p.Arrived(100), 0);
+    CHECK_EQ(p.Arrived(101), 0);
+    CHECK_EQ(p.Arrived(104), 2);
+    CHECK_EQ(p.Arrived(103), -1);
+    CHECK_EQ(p.Arrived(104), -1);
+    CHECK_EQ(p.Arrived(200), 0);  // a pause, not loss
+    std::vector<float> frame(kFrameSamples * kChannels, 0.5f), out(kFrameSamples * kChannels, 0);
+    p.Push(frame.data(), kFrameSamples);
+    CHECK_EQ(p.Mix(out.data(), kFrameSamples, 1), size_t(0));  // still filling
+    p.Push(frame.data(), kFrameSamples);
+    p.Push(frame.data(), kFrameSamples);
+    CHECK_EQ(p.Mix(out.data(), kFrameSamples, 0.5f), size_t(kFrameSamples));
+    CHECK(out[0] > 0.24f && out[0] < 0.26f);
+    for (int i = 0; i < 20; i++) p.Push(frame.data(), kFrameSamples);
+    CHECK(p.Buffered() <= kPlayoutMax);
+    Playout w;
+    CHECK_EQ(w.Arrived(65535), 0);
+    CHECK_EQ(w.Arrived(0), 0);  // wraps
+    CHECK_EQ(w.Arrived(2), 1);
 }
 
 static void testPermissions() {
@@ -535,6 +647,8 @@ int main() {
     testTime();
     testBase64AndProto();
     testReady();
+    testVoice();
+    testRtp();
     testPermissions();
     testMessages();
     testMentions();

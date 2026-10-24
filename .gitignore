@@ -2,3 +2,7 @@ build/
 *.exe
 *.obj
 *.log
+deps/src/
+deps/build/
+deps/lib/
+deps/include/

@@ -1,0 +1,14 @@
+{
+  "name": "disky-deps",
+  "dependencies": [
+    "opus",
+    "nlohmann-json",
+    { "name": "openssl", "version>=": "3.0.7" },
+    { "name": "mlspp", "features": ["openssl"] }
+  ],
+  "builtin-baseline": "d07689ef165f033de5c0710e4f67c193a85373e1",
+  "vcpkg-configuration": {
+    "overlay-ports": ["src/libdave/cpp/vcpkg-alts/overlay-ports"]
+  },
+  "overrides": [{ "name": "openssl", "version": "3.0.7" }]
+}

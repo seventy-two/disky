@@ -14,16 +14,22 @@ call "%VS%\VC\Auxiliary\Build\vcvars64.bat" >nul || exit /b 1
 
 if not exist build\obj mkdir build\obj
 if not exist build\tests mkdir build\tests
-set CFLAGS=/nologo /std:c++17 /O2 /EHsc /utf-8 /W3 /MP /DUNICODE /D_UNICODE /DNOMINMAX /DWIN32_LEAN_AND_MEAN /D_CRT_SECURE_NO_WARNINGS /DIMGUI_DISABLE_DEMO_WINDOWS /DIMGUI_USE_WCHAR32 /Isrc /Ithird_party /Ithird_party\imgui /Ithird_party\imgui\backends
+if not exist deps\lib\libdave.lib (
+    echo The voice libraries aren't built: run deps.bat first.
+    exit /b 1
+)
+set CFLAGS=/nologo /std:c++17 /O2 /EHsc /utf-8 /W3 /MP /DUNICODE /D_UNICODE /DNOMINMAX /DWIN32_LEAN_AND_MEAN /D_CRT_SECURE_NO_WARNINGS /DIMGUI_DISABLE_DEMO_WINDOWS /DIMGUI_USE_WCHAR32 /Isrc /Ithird_party /Ithird_party\imgui /Ithird_party\imgui\backends /Ideps\include
 
 echo Building tests...
-cl %CFLAGS% /Fobuild\tests\ /Fe:build\tests.exe tests\tests.cpp src\commands.cpp src\store.cpp src\markdown.cpp src\gif.cpp > build\tests.log 2>&1 || (type build\tests.log & exit /b 1)
+cl %CFLAGS% /Fobuild\tests\ /Fe:build\tests.exe tests\tests.cpp src\commands.cpp src\store.cpp src\markdown.cpp src\gif.cpp src\rtp.cpp > build\tests.log 2>&1 || (type build\tests.log & exit /b 1)
 build\tests.exe || exit /b 1
 
 echo Building disky.exe...
+if not exist build\lib mkdir build\lib
+if not exist build\lib\miniaudio.obj cl /nologo /O2 /W3 /c /Fobuild\lib\ /Ithird_party src\miniaudio.c > build\lib.log 2>&1 || (type build\lib.log & exit /b 1)
 rc /nologo /fo build\app.res src\app.rc || exit /b 1
-cl %CFLAGS% /Fobuild\obj\ /Fe:build\disky.exe src\*.cpp third_party\imgui\*.cpp third_party\imgui\backends\*.cpp third_party\qrcodegen\qrcodegen.cpp build\app.res ^
+cl %CFLAGS% /Fobuild\obj\ /Fe:build\disky.exe src\*.cpp third_party\imgui\*.cpp third_party\imgui\backends\*.cpp third_party\qrcodegen\qrcodegen.cpp build\app.res build\lib\miniaudio.obj deps\lib\*.lib ^
     /link /SUBSYSTEM:WINDOWS d3d11.lib dxgi.lib d3dcompiler.lib dwmapi.lib winhttp.lib windowscodecs.lib crypt32.lib bcrypt.lib ^
-    mfplat.lib mfuuid.lib ole32.lib oleaut32.lib shell32.lib user32.lib gdi32.lib advapi32.lib comdlg32.lib > build\build.log 2>&1 || (type build\build.log & exit /b 1)
+    mfplat.lib mfuuid.lib ole32.lib oleaut32.lib shell32.lib user32.lib gdi32.lib advapi32.lib comdlg32.lib ws2_32.lib > build\build.log 2>&1 || (type build\build.log & exit /b 1)
 findstr /i /c:"warning" build\build.log
 echo Built build\disky.exe

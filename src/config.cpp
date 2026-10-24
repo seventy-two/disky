@@ -77,7 +77,12 @@ Config LoadConfig() {
     c.notify = j.value("notify", true);
     c.members = j.value("members", true);
     c.channels = j.value("channels", true);
+    c.voice = j.value("voice", true);
     c.volume = j.value("volume", 0.5f);
+    c.deafened = j.value("deafened", false);
+    if (auto it = j.find("voiceVolumes"); it != j.end() && it->is_object())
+        for (const auto& [k, v] : it->items())
+            if (v.is_number()) c.voiceVolumes[k] = v.get<float>();
     if (auto it = j.find("recentEmoji"); it != j.end() && it->is_array())
         for (const auto& e : *it)
             if (e.is_string()) c.recentEmoji.push_back(e.get<std::string>());
@@ -99,7 +104,10 @@ bool SaveConfig(const Config& c) {
         {"notify", c.notify},
         {"members", c.members},
         {"channels", c.channels},
+        {"voice", c.voice},
         {"volume", c.volume},
+        {"deafened", c.deafened},
+        {"voiceVolumes", c.voiceVolumes},
         {"recentEmoji", c.recentEmoji},
     };
     std::wstring path = configPath(true);

@@ -34,6 +34,14 @@ result is a single `disky.exe` with nothing to install.
   `/weather Bristol` works. A bot's answer says who ran which command.
 - **Show or hide** the channel list and the member list with their icons
   in the title bar.
+- **Voice**: the speaker in the title bar shows or hides the server's voice
+  channels, in a column of their own with who's in each (muted, deafened,
+  camera, LIVE). The speaker turns green, with sound waves, while anyone's
+  in one. Click a channel to join it and listen; your mic stays off for
+  now. Whoever's talking gets a green ring; right-click someone for their
+  volume. The bar under the list deafens and leaves. Calls are end-to-end
+  encrypted (Discord's DAVE) like everyone else's. Each call is logged
+  (nothing secret) to `%APPDATA%\disky\voice.log`.
 - **Typing**: who else is typing shows under the box; disky tells Discord
   when you're typing, as its own app does.
 - **Attach** with the paperclip, by dropping files on the window, or by
@@ -55,12 +63,15 @@ result is a single `disky.exe` with nothing to install.
 
 ## Building
 
-`build.bat` builds `build\disky.exe` with Visual Studio 2022's C++ tools
-and runs the tests. The portable parts (the store, the markdown parser and GIF frames)
-also build on Linux:
+Run `deps.bat` once first: it builds the voice libraries into `deps\`
+(Opus, and Discord's libdave with mlspp and OpenSSL, through vcpkg; it needs
+Git and takes a while). Then `build.bat` builds `build\disky.exe` with
+Visual Studio 2022's C++ tools and runs the tests. The portable parts (the
+store, the markdown parser, GIF frames and voice packets) also build on
+Linux:
 
 ```sh
-g++ -std=c++17 -I src -I third_party tests/tests.cpp src/commands.cpp src/store.cpp src/markdown.cpp src/gif.cpp -o tests && ./tests
+g++ -std=c++17 -I src -I third_party tests/tests.cpp src/commands.cpp src/store.cpp src/markdown.cpp src/gif.cpp src/rtp.cpp -o tests && ./tests
 ```
 
 `tools/genemoji.py` regenerates `src/emoji_data.inc` (the picker's emoji and
@@ -75,6 +86,11 @@ shortcodes) from gemoji's `emoji.json`.
   from guild subscriptions (op 37), the colours of message authors from
   op 8 member requests.
 - Images and emoji are drawn from Discord's CDN and Twemoji (via jsDelivr).
+- Voice: voice gateway v8, UDP with `aead_aes256_gcm_rtpsize` (AES-GCM from
+  Windows' BCrypt), DAVE end-to-end encryption through libdave's C API,
+  Opus decoding, and playback through miniaudio.
 
 Third-party code: Dear ImGui (MIT), nlohmann/json (MIT), Nayuki's QR Code
-generator (MIT), gemoji's emoji list (MIT).
+generator (MIT), gemoji's emoji list (MIT), miniaudio (MIT-0). Built by
+`deps.bat`: libdave (MIT), mlspp (BSD-2-Clause), OpenSSL (Apache 2.0) and
+Opus (BSD-3-Clause).

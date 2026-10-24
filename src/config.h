@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -21,7 +22,12 @@ struct Config {
     bool notify = true;
     bool members = true;  // the member list is shown
     bool channels = true;  // the channel or DM list is shown
+    bool voice = true;     // the voice channel list is shown
     float volume = 0.5f;  // for videos
+    // Voice: each person's volume (1 as sent, up to 2), by user ID, and
+    // whether we're deafened.
+    std::map<std::string, float> voiceVolumes;
+    bool deafened = false;
     std::vector<std::string> recentEmoji;  // newest first, as typed in a message
 };
 
