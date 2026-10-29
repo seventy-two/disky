@@ -521,6 +521,17 @@ static void testMarkdown() {
     CHECK_EQ(kinds(Parse("a\n```js\nx = 1\n```\nb")), std::string("t[a]|code(js:x = 1)|t[b]"));
     CHECK_EQ(kinds(Parse("```inline```")), std::string("code(:inline)"));
 
+    std::vector<AnsiRun> runs;
+    CHECK_EQ(StripAnsi("BA \x1b[2;32m+6.05\x1b[0m x\n\x1b[1;4;41mY\x1b[m\x1b[7", &runs), std::string("BA +6.05 x\nY\x1b[7"));
+    CHECK_EQ(runs.size(), size_t(5));
+    if (runs.size() == 5) {
+        CHECK(runs[0].start == 0 && runs[0].end == 3 && runs[0].fg == 0);
+        CHECK(runs[1].start == 3 && runs[1].end == 8 && runs[1].fg == 32 && !runs[1].bold);
+        CHECK(runs[2].start == 8 && runs[2].end == 11 && runs[2].fg == 0);
+        CHECK(runs[3].start == 11 && runs[3].end == 12 && runs[3].bg == 41 && runs[3].bold && runs[3].underline);
+        CHECK(runs[4].start == 12 && runs[4].end == 15 && runs[4].bg == 0 && !runs[4].bold);
+    }
+
     auto ps = Parse("> quoted\n# Big\n-# small\n- item\n  - nested\n3. third");
     CHECK_EQ(ps.size(), size_t(6));
     if (ps.size() == 6) {

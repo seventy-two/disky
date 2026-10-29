@@ -26,6 +26,8 @@ struct Piece {
     uint64_t channel = 0;  // a channel mention's channel
     int spoiler = 0;
     bool pill = false;  // a mention's background
+    ImU32 back = 0;     // an ```ansi run's background, 0 for none
+    bool thicken = false;  // bold where there's no bold font (mono)
 };
 
 struct Layout {

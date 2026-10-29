@@ -47,6 +47,20 @@ struct Para {
     std::vector<Span> spans;
 };
 
+// AnsiRun is a stretch of an ```ansi block's text, [start, end) in bytes
+// of the text with its escapes taken out, and the SGR style it has: fg
+// 30-37 and bg 40-47 (0 for none), as Discord draws them.
+struct AnsiRun {
+    size_t start = 0, end = 0;
+    int fg = 0, bg = 0;
+    bool bold = false, underline = false;
+};
+
+// StripAnsi takes the ESC[...m escapes out of an ```ansi block, giving the
+// text to show and its styled runs. Styles carry over line breaks; codes
+// Discord ignores (dim, italic, 256 colours…) are dropped.
+std::string StripAnsi(std::string_view s, std::vector<AnsiRun>* runs);
+
 // Parse reads a message's content. Messages with nothing but up to 30
 // emoji (and spaces) are drawn large, as Discord does: jumbo says so.
 std::vector<Para> Parse(std::string_view content, bool* jumbo = nullptr);

@@ -1,6 +1,7 @@
 #include "richtext.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 
 namespace disky {
@@ -14,6 +15,22 @@ ImFont* fontFor(const Fonts& f, uint16_t st, bool heading) {
     if (bold) return f.bold;
     if (it) return f.italic;
     return f.regular;
+}
+
+// ansiColour is Discord's colour for an ```ansi SGR code (30-37, 40-47).
+// White text follows the theme's text colour, so it shows in light mode.
+ImU32 ansiColour(int code) {
+    static const unsigned fg[8] = {0x4f545c, 0xdc322f, 0x859900, 0xb58900, 0x268bd2, 0xd33682, 0x2aa198, 0xffffff};
+    static const unsigned bg[8] = {0x002b36, 0xcb4b16, 0x586e75, 0x657b83, 0x839496, 0x6c71c4, 0x93a1a1, 0xfdf6e3};
+    if (code == 37) return U32(Colours().text);
+    if (code >= 30 && code <= 37) return U32(Hex(fg[code - 30]));
+    if (code >= 40 && code <= 47) return U32(Hex(bg[code - 40]));
+    return 0;
+}
+
+bool isAnsi(const std::string& lang) {
+    return lang.size() == 4 && std::equal(lang.begin(), lang.end(), "ansi",
+                                          [](char a, char b) { return std::tolower((unsigned char)a) == b; });
 }
 
 std::string twemoji(const std::string& file) {
@@ -109,7 +126,9 @@ private:
         float yy = top + pad;
         float lh = size * 1.3f;
         size_t pos = 0;
-        const std::string& t = p.text;
+        std::vector<AnsiRun> runs;
+        bool ansi = isAnsi(p.lang);
+        const std::string t = ansi ? StripAnsi(p.text, &runs) : p.text;
         float widest = 0;
         while (pos <= t.size()) {
             size_t nl = t.find('\n', pos);
@@ -119,16 +138,21 @@ private:
             do {
                 const char* wrap = fonts_.mono->CalcWordWrapPosition(size, s, e, inner);
                 if (wrap == s && s < e) wrap = s + 1;
-                Piece line;
-                line.text.assign(s, wrap);
-                NoteText(line.text);
-                line.font = fonts_.mono;
-                line.fontSize = size;
-                line.colour = U32(c.text);
-                line.size = fonts_.mono->CalcTextSizeA(size, FLT_MAX, 0, line.text.c_str());
-                line.pos = ImVec2(indent_ + pad, yy);
-                widest = std::max(widest, line.size.x);
-                out_.pieces.push_back(line);
+                if (ansi) {
+                    widest = std::max(widest, ansiLine(runs, t, size_t(s - t.c_str()), size_t(wrap - t.c_str()),
+                                                       indent_ + pad, yy, size));
+                } else {
+                    Piece line;
+                    line.text.assign(s, wrap);
+                    NoteText(line.text);
+                    line.font = fonts_.mono;
+                    line.fontSize = size;
+                    line.colour = U32(c.text);
+                    line.size = fonts_.mono->CalcTextSizeA(size, FLT_MAX, 0, line.text.c_str());
+                    line.pos = ImVec2(indent_ + pad, yy);
+                    widest = std::max(widest, line.size.x);
+                    out_.pieces.push_back(line);
+                }
                 yy += lh;
                 s = wrap;
             } while (s < e);
@@ -140,6 +164,31 @@ private:
         b.size = ImVec2(std::max(width_ - indent_, widest + pad * 2), yy - top + pad - (lh - size));
         y_ = b.pos.y + b.size.y + 4 * scale_;
         lineTop_ = y_;
+    }
+
+    // ansiLine lays out t[from, to), one line of an ```ansi block, as a
+    // piece per styled run; it returns the line's width.
+    float ansiLine(const std::vector<AnsiRun>& runs, const std::string& t, size_t from, size_t to, float x, float y,
+                   float size) {
+        float x0 = x;
+        for (const auto& r : runs) {
+            size_t a = std::max(r.start, from), b = std::min(r.end, to);
+            if (a >= b) continue;
+            Piece piece;
+            piece.text = t.substr(a, b - a);
+            NoteText(piece.text);
+            piece.font = fonts_.mono;
+            piece.fontSize = size;
+            piece.colour = r.fg ? ansiColour(r.fg) : U32(Colours().text);
+            piece.back = r.bg ? ansiColour(r.bg) : 0;
+            piece.thicken = r.bold;
+            if (r.underline) piece.style |= style::Underline;
+            piece.size = fonts_.mono->CalcTextSizeA(size, FLT_MAX, 0, piece.text.c_str());
+            piece.pos = ImVec2(x, y);
+            x += piece.size.x;
+            out_.pieces.push_back(std::move(piece));
+        }
+        return x - x0;
     }
 
     // place puts a piece of width w on the line, wrapping first if it
@@ -322,7 +371,9 @@ Hit Draw(const Layout& l, ImVec2 at, const ImageFor& images, const std::vector<i
             if (p.pill)
                 dl->AddRectFilled(ImVec2(a.x - pad, a.y), ImVec2(b.x + pad, b.y), U32(c.accent, over ? 0.6f : 0.3f));
             if (p.style & style::Code) dl->AddRectFilled(ImVec2(a.x - pad, a.y - 1), ImVec2(b.x + pad, b.y + 1), U32(c.code));
+            if (p.back) dl->AddRectFilled(a, b, p.back);
             dl->AddText(p.font, p.fontSize, a, p.colour, p.text.c_str());
+            if (p.thicken) dl->AddText(p.font, p.fontSize, ImVec2(a.x + 1, a.y), p.colour, p.text.c_str());
             float th = std::max(1.0f, p.fontSize / 16);
             if ((p.style & style::Underline) || (!p.link.empty() && over))
                 dl->AddRectFilled(ImVec2(a.x, b.y - th), ImVec2(b.x, b.y), p.colour);
@@ -411,7 +462,7 @@ std::string PlainText(const std::string& content, const Resolver& names) {
     for (const auto& p : Parse(content)) {
         if (!out.empty()) out += ' ';
         if (p.code) {
-            out += p.text;
+            out += isAnsi(p.lang) ? StripAnsi(p.text, nullptr) : p.text;
             continue;
         }
         for (const auto& s : p.spans) {

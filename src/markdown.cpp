@@ -560,4 +560,51 @@ std::vector<Para> Parse(std::string_view content, bool* jumbo) {
     return out;
 }
 
+std::string StripAnsi(std::string_view s, std::vector<AnsiRun>* runs) {
+    std::string out;
+    AnsiRun cur;
+    auto flush = [&] {
+        cur.end = out.size();
+        if (runs && cur.end > cur.start) runs->push_back(cur);
+        cur.start = out.size();
+    };
+    for (size_t i = 0; i < s.size();) {
+        if (s[i] != '\x1b' || i + 1 >= s.size() || s[i + 1] != '[') {
+            out += s[i++];
+            continue;
+        }
+        size_t j = i + 2;
+        while (j < s.size() && (isdigit((unsigned char)s[j]) || s[j] == ';')) j++;
+        if (j >= s.size() || s[j] != 'm') {
+            out += s[i++];  // not an SGR escape: shown as it is
+            continue;
+        }
+        flush();
+        std::string_view params = s.substr(i + 2, j - i - 2);
+        i = j + 1;
+        if (params.empty()) params = "0";
+        for (size_t a = 0; a <= params.size();) {
+            size_t b = params.find(';', a);
+            if (b == std::string_view::npos) b = params.size();
+            int n = 0;
+            for (size_t k = a; k < b; k++) n = n * 10 + (params[k] - '0');
+            if (n == 0) {
+                cur.fg = cur.bg = 0;
+                cur.bold = cur.underline = false;
+            } else if (n == 1) {
+                cur.bold = true;
+            } else if (n == 4) {
+                cur.underline = true;
+            } else if (n >= 30 && n <= 37) {
+                cur.fg = n;
+            } else if (n >= 40 && n <= 47) {
+                cur.bg = n;
+            }
+            a = b + 1;
+        }
+    }
+    flush();
+    return out;
+}
+
 }  // namespace disky
