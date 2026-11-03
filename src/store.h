@@ -70,6 +70,7 @@ struct Role {
     int position = 0;
     uint64_t permissions = 0;
     bool hoist = false;
+    bool mentionable = false;  // anyone may @ it, not just those allowed @everyone
 };
 
 struct Overwrite {

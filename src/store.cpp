@@ -140,6 +140,7 @@ Role readRole(const json& r) {
     role.position = num(r, "position");
     role.permissions = bits(r, "permissions");
     role.hoist = flag(r, "hoist");
+    role.mentionable = flag(r, "mentionable");
     return role;
 }
 

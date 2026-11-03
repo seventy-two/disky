@@ -83,7 +83,7 @@ static json readyFixture() {
         "roles": [
           {"id": "100", "name": "@everyone", "permissions": "1024", "position": 0, "color": 0},
           {"id": "101", "name": "Mods", "permissions": "0", "position": 2, "color": 16711680, "hoist": true},
-          {"id": "102", "name": "Blue", "permissions": "0", "position": 1, "color": 255}
+          {"id": "102", "name": "Blue", "permissions": "0", "position": 1, "color": 255, "mentionable": true}
         ],
         "channels": [
           {"id": "200", "type": 4, "name": "Cat", "position": 0},
@@ -116,6 +116,8 @@ static void testReady() {
     CHECK_EQ(fx.size(), size_t(1));
     CHECK_EQ(s.me, Snowflake(1));
     CHECK_EQ(s.guilds.at(100).name, std::string("Guild"));
+    CHECK(s.guilds.at(100).roles.at(102).mentionable);
+    CHECK(!s.guilds.at(100).roles.at(101).mentionable);
     // Settings for a guild we've left don't make it appear.
     CHECK_EQ(s.guilds.size(), size_t(1));
     // general is visible and in its category, secret is denied, voice isn't

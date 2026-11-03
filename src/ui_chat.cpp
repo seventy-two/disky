@@ -1229,7 +1229,26 @@ void App::suggest() {
             suggestions_.push_back({name + (user.empty() || user == name ? "" : "  " + user), "@" + name, "<@" + IdString(uid) + ">",
                                     avatarUrl(uid, guild_), userColour(guild_, uid)});
         }
-        if (guild_ && (perms(channel_) & perm::MentionEveryone))
+        bool everyone = guild_ && (perms(channel_) & perm::MentionEveryone);
+        // Roles: mentionable ones, or any with permission to mention @everyone.
+        if (guild_) {
+            std::vector<const Role*> roles;
+            for (const auto& [rid, r] : store_.guilds[guild_].roles)
+                if (rid != guild_ && (r.mentionable || everyone) &&
+                    (q.empty() || lower(r.name).find(q) != std::string::npos))
+                    roles.push_back(&r);
+            std::sort(roles.begin(), roles.end(), [](const Role* a, const Role* b) { return a->position > b->position; });
+            // Keep room for a few roles when people fill the list.
+            size_t room = std::min(roles.size(), size_t(3));
+            while (suggestions_.size() + room > kMax && !suggestions_.empty()) suggestions_.pop_back();
+            for (const Role* r : roles) {
+                if (suggestions_.size() >= kMax) break;
+                suggestions_.push_back({"@" + r->name, "@" + r->name, "<@&" + IdString(r->id) + ">", "",
+                                        r->colour ? U32(Hex(r->colour)) : U32(Colours().heading)});
+                suggestions_.back().detail = "role";
+            }
+        }
+        if (everyone)
             for (const char* e : {"everyone", "here"})
                 if (suggestions_.size() < kMax && std::string(e).rfind(q, 0) == 0)
                     suggestions_.push_back({std::string("@") + e, std::string("@") + e, std::string("@") + e, "", 0});
