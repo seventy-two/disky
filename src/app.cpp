@@ -2,6 +2,8 @@
 // loading, sending and acknowledging messages. Drawing is in ui.cpp.
 #include "app.h"
 
+#include <ctime>
+
 #include <shellapi.h>
 #include <wincodec.h>
 #include <wrl/client.h>
@@ -755,6 +757,43 @@ void App::loadLatest(uint64_t channel) {
             }
         });
     });
+}
+
+void App::freshen(const std::string& url) {
+    int64_t expiry = SignedUrlExpiry(url);
+    if (!expiry || expiry > int64_t(time(nullptr)) + 60) return;
+    // Asked already about this signature (or a failed answer): leave it.
+    int64_t& asked = refreshAsked_[UrlPath(url)];
+    if (asked == expiry) return;
+    asked = expiry;
+    staleUrls_.push_back(url);
+}
+
+// refreshUrls asks Discord to re-sign the expired links found last frame,
+// as its own client does, and swaps the answers into every message.
+void App::refreshUrls() {
+    if (staleUrls_.empty() || !api_) return;
+    int gen = generation_;
+    Api* api = api_.get();
+    for (size_t i = 0; i < staleUrls_.size(); i += 50) {
+        json urls(std::vector<std::string>(staleUrls_.begin() + i, staleUrls_.begin() + std::min(i + 50, staleUrls_.size())));
+        fetcher_->Run([this, api, urls, gen] {
+            HttpResult r = api->Call("POST", "/attachments/refresh-urls", {{"attachment_urls", urls}});
+            post([this, r, gen] {
+                if (gen != generation_ || !r.ok()) return;
+                json j = json::parse(r.body, nullptr, false);
+                std::unordered_map<std::string, std::string> fresh;
+                if (j.is_object() && j.contains("refreshed_urls") && j["refreshed_urls"].is_array())
+                    for (const auto& u : j["refreshed_urls"]) {
+                        std::string url = u.is_object() && u.contains("refreshed") && u["refreshed"].is_string() ? u["refreshed"].get<std::string>() : "";
+                        size_t q = url.find('?');
+                        if (q != std::string::npos) fresh[UrlPath(url)] = url.substr(q + 1);
+                    }
+                store_.RefreshUrls(fresh);
+            });
+        });
+    }
+    staleUrls_.clear();
 }
 
 void App::loadOlder(uint64_t channel) {

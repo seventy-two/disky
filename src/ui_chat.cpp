@@ -687,6 +687,7 @@ void App::attachments(const Message& m, float x, float y, float w) {
     const Palette& c = Colours();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     for (const auto& a : m.attachments) {
+        freshen(a.url.empty() ? a.proxyUrl : a.url);
         if (a.IsImage() || a.IsVideo()) {
             ImVec2 size = fit(float(a.width), float(a.height), std::min(w, 400 * scale_), 300 * scale_);
             std::string base = a.proxyUrl.empty() ? a.url : a.proxyUrl;
@@ -883,6 +884,7 @@ float App::embedHeight(const Embed& e, float w) {
 }
 
 void App::embed(const Message& m, const Embed& e, float x, float y, float w) {
+    for (const Media* md : {&e.thumbnail, &e.image, &e.video}) freshen(md->url.empty() ? md->proxyUrl : md->url);
     const Palette& c = Colours();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     std::string key = IdString(m.id) + e.url + e.type;

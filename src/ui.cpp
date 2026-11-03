@@ -60,6 +60,7 @@ void App::Frame() {
     // What's on screen counts as seen.
     if (channel_ && GetForegroundWindow() == hwnd_ && !IsIconic(hwnd_) && atBottom_) seeNotices(channel_);
     images_->Tick();
+    refreshUrls();
     gifWanted_ = false;
     const Palette& c = Colours();
     ImGuiViewport* vp = ImGui::GetMainViewport();

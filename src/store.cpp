@@ -1,6 +1,7 @@
 #include "store.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 
@@ -159,6 +160,27 @@ bool endsWithAny(const std::string& name, std::initializer_list<const char*> ext
 }
 
 }  // namespace
+
+int64_t SignedUrlExpiry(const std::string& url) {
+    size_t q = url.find('?');
+    if (q == std::string::npos) return 0;
+    for (size_t i = q; i != std::string::npos && i < url.size(); i = url.find('&', i + 1)) {
+        if (url.compare(i + 1, 3, "ex=") != 0) continue;
+        int64_t t = 0;
+        size_t j = i + 4;
+        for (; j < url.size() && std::isxdigit((unsigned char)url[j]); j++)
+            t = t * 16 + (std::isdigit((unsigned char)url[j]) ? url[j] - '0' : (std::tolower((unsigned char)url[j]) - 'a' + 10));
+        return j > i + 4 ? t : 0;
+    }
+    return 0;
+}
+
+std::string UrlPath(const std::string& url) {
+    size_t scheme = url.find("://");
+    size_t start = url.find('/', scheme == std::string::npos ? 0 : scheme + 3);
+    if (start == std::string::npos) return "";
+    return url.substr(start, url.find_first_of("?#", start) - start);
+}
 
 int64_t ParseTime(const std::string& s) {
     int y, mo, d, h, mi, sec;
@@ -915,6 +937,33 @@ void Store::Acked(Snowflake channelId, Snowflake messageId) {
     ReadState& r = reads[channelId];
     r.lastAcked = std::max(r.lastAcked, messageId);
     r.mentions = 0;
+}
+
+int Store::RefreshUrls(const std::unordered_map<std::string, std::string>& fresh) {
+    int changed = 0;
+    auto swap = [&](std::string& url) {
+        if (url.empty() || !SignedUrlExpiry(url)) return;
+        auto it = fresh.find(UrlPath(url));
+        if (it == fresh.end()) return;
+        std::string next = url.substr(0, url.find('?')) + "?" + it->second;
+        if (next != url) {
+            url = std::move(next);
+            changed++;
+        }
+    };
+    for (auto& [id, ms] : messages)
+        for (auto& m : ms.list) {
+            for (auto& a : m.attachments) {
+                swap(a.url);
+                swap(a.proxyUrl);
+            }
+            for (auto& e : m.embeds)
+                for (Media* md : {&e.thumbnail, &e.image, &e.video}) {
+                    swap(md->url);
+                    swap(md->proxyUrl);
+                }
+        }
+    return changed;
 }
 
 void Store::NoteAsked(Snowflake guildId, const std::vector<Snowflake>& ids) {

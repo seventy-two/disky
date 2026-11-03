@@ -262,6 +262,13 @@ private:
     uint64_t contextMessage_ = 0;
     std::unordered_map<uint64_t, std::vector<int>> revealed_;  // spoilers shown, by message
     std::set<std::string> revealedMedia_;
+    // Signed attachment links found expired while drawing, waiting to be
+    // sent off for fresh ones, and every file asked about (by UrlPath), so
+    // each is asked once per expiry.
+    std::vector<std::string> staleUrls_;
+    std::map<std::string, int64_t> refreshAsked_;
+    void freshen(const std::string& url);
+    void refreshUrls();
     float scrollMax_ = 0, scrollY_ = 0;
     bool atBottom_ = true;
     uint64_t firstShown_ = 0;

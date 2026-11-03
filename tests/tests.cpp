@@ -728,7 +728,38 @@ static void testCommands() {
     CHECK_EQ(out[0]["value"], json(17));
 }
 
+static void testSignedUrls() {
+    std::string cdn = "https://cdn.discordapp.com/attachments/1/2/Pet.png?ex=6ae5e56d&is=6ae493ed&hm=c8a8&";
+    std::string media = "https://media.discordapp.net/attachments/1/2/Pet.png?ex=6ae5e56d&is=6ae493ed&hm=c8a8&";
+    CHECK_EQ(SignedUrlExpiry(cdn), int64_t(0x6ae5e56d));
+    CHECK_EQ(SignedUrlExpiry("https://cdn.discordapp.com/x.png?is=1&ex=A0"), int64_t(160));
+    CHECK_EQ(SignedUrlExpiry("https://cdn.discordapp.com/avatars/1/a.png?size=64"), int64_t(0));
+    CHECK_EQ(SignedUrlExpiry("https://example.com/x?index=3"), int64_t(0));
+    CHECK_EQ(UrlPath(cdn), std::string("/attachments/1/2/Pet.png"));
+    CHECK_EQ(UrlPath(media), UrlPath(cdn));
+
+    Store s;
+    Message m;
+    m.id = 5;
+    Attachment a;
+    a.url = cdn;
+    a.proxyUrl = media;
+    m.attachments.push_back(a);
+    Embed e;
+    e.image.url = "https://example.com/pic.png";
+    e.thumbnail.proxyUrl = media;
+    m.embeds.push_back(e);
+    s.messages[9].list.push_back(m);
+    CHECK_EQ(s.RefreshUrls({{"/attachments/1/2/Pet.png", "ex=6aea82ad&is=6ae9312d&hm=f3f2&"}}), 3);
+    const Message& got = s.messages[9].list.front();
+    CHECK_EQ(got.attachments[0].url, std::string("https://cdn.discordapp.com/attachments/1/2/Pet.png?ex=6aea82ad&is=6ae9312d&hm=f3f2&"));
+    CHECK_EQ(got.attachments[0].proxyUrl, std::string("https://media.discordapp.net/attachments/1/2/Pet.png?ex=6aea82ad&is=6ae9312d&hm=f3f2&"));
+    CHECK_EQ(got.embeds[0].image.url, std::string("https://example.com/pic.png"));
+    CHECK_EQ(s.RefreshUrls({{"/attachments/1/2/Pet.png", "ex=6aea82ad&is=6ae9312d&hm=f3f2&"}}), 0);
+}
+
 int main() {
+    testSignedUrls();
     testTime();
     testBase64AndProto();
     testReady();

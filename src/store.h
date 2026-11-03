@@ -30,6 +30,14 @@ int64_t IdTime(Snowflake id);
 // milliseconds; 0 if it isn't one.
 int64_t ParseTime(const std::string& s);
 
+// Discord signs attachment links, and a signature lasts about a day.
+// SignedUrlExpiry is when a link stops working (its ex= parameter, hex Unix
+// seconds), or 0 if it isn't signed.
+int64_t SignedUrlExpiry(const std::string& url);
+// UrlPath is a link's path, without host or query: the same file on
+// cdn.discordapp.com and media.discordapp.net shares it.
+std::string UrlPath(const std::string& url);
+
 namespace perm {
 constexpr uint64_t AddReactions = 1ull << 6;
 constexpr uint64_t Administrator = 1ull << 3;
@@ -252,6 +260,11 @@ public:
 
     // Acked records that we've read a channel up to a message.
     void Acked(Snowflake channelId, Snowflake messageId);
+
+    // RefreshUrls swaps fresh signatures into every stored link to the same
+    // file, on either CDN host: fresh maps a link's UrlPath to its new query
+    // string. It returns how many links changed.
+    int RefreshUrls(const std::unordered_map<std::string, std::string>& fresh);
 
     Snowflake me = 0;
     std::unordered_map<Snowflake, User> users;
