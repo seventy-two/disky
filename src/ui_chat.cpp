@@ -586,6 +586,7 @@ void App::message(const Message& m, bool groupStart, bool alt, float w, float h)
         std::string link = "https://discord.com/channels/" + (m.guildId ? IdString(m.guildId) : std::string("@me")) + "/" +
                            IdString(m.channelId) + "/" + IdString(m.id);
         if (ImGui::MenuItem("Copy message link")) ImGui::SetClipboardText(link.c_str());
+        if (canManage && !m.embeds.empty() && ImGui::MenuItem("Remove embeds")) suppressEmbeds(m.channelId, m.id);
         if (canManage) {
             ImGui::Separator();
             ImGui::PushStyleColor(ImGuiCol_Text, c.bad);
@@ -628,7 +629,8 @@ void App::toolbar(const Message& m, ImVec2 topRight) {
     bool mine = m.authorId == store_.me;
     bool canManage = mine || (perms(m.channelId) & perm::ManageMessages);
     bool canReact = !guild_ || (perms(m.channelId) & perm::AddReactions);
-    int n = (canReact ? 1 : 0) + (canSend(m.channelId) ? 1 : 0) + (mine ? 1 : 0) + (canManage ? 1 : 0);
+    bool canUnembed = canManage && !m.embeds.empty();
+    int n = (canReact ? 1 : 0) + (canSend(m.channelId) ? 1 : 0) + (mine ? 1 : 0) + (canUnembed ? 1 : 0) + (canManage ? 1 : 0);
     if (n == 0) return;
     float b = 22 * scale_, pad = 1 * scale_;
     float w = n * b + pad * 2;
@@ -661,6 +663,7 @@ void App::toolbar(const Message& m, ImVec2 topRight) {
         replyTo_ = 0;
         focusComposer_ = true;
     }
+    if (canUnembed && button("unembed", icon::Dismiss, "Remove embeds")) suppressEmbeds(m.channelId, m.id);
     if (canManage && button("delete", icon::Delete, "Delete (Shift to skip asking)")) {
         if (ImGui::GetIO().KeyShift)
             deleteMessage(m.channelId, m.id);

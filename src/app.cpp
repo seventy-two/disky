@@ -1138,6 +1138,22 @@ void App::deleteMessage(uint64_t channel, uint64_t id) {
     sender_->Run([api, channel, id] { api->Call("DELETE", "/channels/" + IdString(channel) + "/messages/" + IdString(id)); });
 }
 
+void App::suppressEmbeds(uint64_t channel, uint64_t id) {
+    constexpr int kSuppressEmbeds = 1 << 2;
+    int flags = kSuppressEmbeds;
+    // Hide them now; the gateway's MESSAGE_UPDATE confirms it.
+    for (auto& m : store_.messages[channel].list)
+        if (m.id == id) {
+            m.embeds.clear();
+            m.flags |= kSuppressEmbeds;
+            flags = m.flags;  // as Discord's own client: the existing flags plus this one
+        }
+    Api* api = api_.get();
+    sender_->Run([api, channel, id, flags] {
+        api->Call("PATCH", "/channels/" + IdString(channel) + "/messages/" + IdString(id), {{"flags", flags}});
+    });
+}
+
 void App::react(uint64_t channel, uint64_t id, const Emoji& e, bool add) {
     std::string code = e.id ? UrlEncode(e.name + ":" + IdString(e.id)) : UrlEncode(e.name);
     json emoji = {{"id", e.id ? json(IdString(e.id)) : json(nullptr)}, {"name", e.name}};

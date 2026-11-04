@@ -107,6 +107,9 @@ private:
     static LRESULT CALLBACK keyHook(int code, WPARAM w, LPARAM l);
     static LRESULT CALLBACK mouseHook(int code, WPARAM w, LPARAM l);
     void deleteMessage(uint64_t channel, uint64_t id);
+    // suppressEmbeds hides a message's link previews for everyone (Discord's
+    // "Remove all embeds"); they only come back if the message is edited.
+    void suppressEmbeds(uint64_t channel, uint64_t id);
     void react(uint64_t channel, uint64_t id, const Emoji& e, bool add);
     // Who reacted, by message and emoji: fetched the first time a reaction's
     // hovered, again once its count has changed.
