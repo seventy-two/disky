@@ -220,6 +220,8 @@ void App::signOut() {
     store_ = Store();
     ready_ = false;
     guild_ = channel_ = 0;
+    history_.clear();
+    historyAt_ = 0;
     layouts_.clear();
     listFor_.clear();
     listRanges_.clear();
@@ -674,6 +676,19 @@ void App::seeNotices(uint64_t channel) {
 
 // --- loading and subscriptions ---
 
+void App::goHistory(int step) {
+    for (long long i = (long long)historyAt_ + step; i >= 0 && i < (long long)history_.size(); i += step) {
+        const Visit& v = history_[size_t(i)];
+        if (!store_.channels.count(v.channel) || !store_.CanView(v.channel)) continue;  // gone since
+        if (v.guild && !store_.guilds.count(v.guild)) continue;
+        historyAt_ = size_t(i);
+        navigating_ = true;
+        open(v.guild, v.channel);
+        navigating_ = false;
+        return;
+    }
+}
+
 void App::open(uint64_t guild, uint64_t channel) {
     if (channel_) drafts_[channel_] = draft_.data();
     commandPicked_.clear();
@@ -692,6 +707,12 @@ void App::open(uint64_t guild, uint64_t channel) {
     bool changed = channel != channel_;
     guild_ = guild;
     channel_ = channel;
+    if (!navigating_ && channel && (history_.empty() || history_[historyAt_].channel != channel)) {
+        if (!history_.empty()) history_.resize(historyAt_ + 1);  // a new branch drops what was ahead
+        history_.push_back({guild, channel});
+        if (history_.size() > 100) history_.erase(history_.begin());
+        historyAt_ = history_.size() - 1;
+    }
     if (guild && channel) config_.lastChannels[IdString(guild)] = IdString(channel);
     config_.guild = guild;
     config_.channel = channel;

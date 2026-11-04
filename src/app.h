@@ -65,6 +65,9 @@ private:
 
     // Actions.
     void open(uint64_t guild, uint64_t channel);
+    // Back and forward through the channels opened (mouse buttons 4 and 5,
+    // or Alt+Left/Right), like a browser. step is -1 or +1.
+    void goHistory(int step);
     void loadLatest(uint64_t channel);
     void loadOlder(uint64_t channel);
     void subscribe(uint64_t guild, uint64_t channel, int ranges);
@@ -234,6 +237,13 @@ private:
 
     // Where we are.
     uint64_t guild_ = 0, channel_ = 0;
+    // Channels opened, oldest first; historyAt_ is where we are in it.
+    struct Visit {
+        uint64_t guild = 0, channel = 0;
+    };
+    std::vector<Visit> history_;
+    size_t historyAt_ = 0;
+    bool navigating_ = false;  // open() called by goHistory: don't record it
     std::unordered_map<uint64_t, std::string> listFor_;  // channel → member list ID
     std::unordered_map<uint64_t, int> listRanges_;       // channel → ranges subscribed
     uint64_t subscribedChannel_ = 0;

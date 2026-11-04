@@ -104,6 +104,12 @@ void App::Frame() {
         serverMenu();
         emojiPicker();
         settings();
+        // Back/forward: mouse buttons 4 and 5 (ImGui's 3 and 4), Alt+Left/Right.
+        if (!bindingKey_ && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId)) {
+            ImGuiIO& io = ImGui::GetIO();
+            if (ImGui::IsMouseClicked(3) || (io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_LeftArrow, false))) goHistory(-1);
+            if (ImGui::IsMouseClicked(4) || (io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_RightArrow, false))) goHistory(+1);
+        }
     }
     notices();
     ImGui::End();
