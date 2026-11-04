@@ -62,6 +62,15 @@ void App::Frame() {
     images_->Tick();
     refreshUrls();
     gifWanted_ = false;
+    // Clicked in from another window: once the button's up, the message
+    // box has the keys, unless the click went into another text field or
+    // opened something.
+    if (focusAfterClick_ && !ImGui::IsAnyMouseDown()) {
+        focusAfterClick_ = false;
+        // (A click on blank space briefly holds the window itself, which
+        // counts as an active item, so ask about text fields instead.)
+        if (!ImGui::GetIO().WantTextInput && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId)) focusComposer_ = true;
+    }
     const Palette& c = Colours();
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->Pos);

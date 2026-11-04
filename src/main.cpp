@@ -224,6 +224,10 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         break;
     case WM_NCHITTEST: return hitTest(h, lParam);
+    case WM_MOUSEACTIVATE:
+        // Sent only when a click lands on the window while it's inactive.
+        if (app && GetForegroundWindow() != h) app->ClickedIn();
+        break;
     case WM_SIZE:
         if (wParam != SIZE_MINIMIZED) {
             resizeW = LOWORD(lParam);

@@ -54,6 +54,9 @@ public:
     void DropFiles(const std::vector<std::wstring>& paths);
     // SaveWindow remembers where the window is, for next time.
     void SaveWindow();
+    // ClickedIn: the window was brought to the front by a click, so the
+    // message box takes the keys once the click's done.
+    void ClickedIn() { focusAfterClick_ = true; }
 
 private:
     // A UI-thread callback, posted from a worker when its request's done.
@@ -311,6 +314,7 @@ private:
     uint64_t replyTo_ = 0;
     uint64_t editing_ = 0;
     bool focusComposer_ = false;
+    bool focusAfterClick_ = false;
     struct Pending {
         std::string name, bytes, type;
     };
