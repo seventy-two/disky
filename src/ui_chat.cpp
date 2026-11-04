@@ -1,5 +1,6 @@
 // Drawing the open channel: its title bar header, messages with their replies,
 // attachments, embeds and reactions, and the composer.
+#include <chrono>
 #include <windows.h>
 #include <commdlg.h>
 
@@ -18,6 +19,45 @@ constexpr float stickerSize = 128;
 constexpr float kNames = 130;  // the name column's width, before scaling
 
 bool normalType(int t) { return t == 0 || t == 19 || t == 20 || t == 21 || t == 23; }
+
+int64_t nowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+std::string emojiUrl(const Emoji& e) {
+    return e.id ? "https://cdn.discordapp.com/emojis/" + IdString(e.id) + (e.animated ? ".gif" : ".png") + "?size=48"
+                : "https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/72x72/" + TwemojiName(e.name) + ".png";
+}
+
+std::string plural(int n, const char* one) { return std::to_string(n) + " " + one + (n == 1 ? "" : "s"); }
+
+// timeLeft says how long a poll has to run, roughly, as Discord does.
+std::string timeLeft(int64_t ms) {
+    int64_t mins = std::max<int64_t>(1, ms / 60000);
+    if (mins < 60) return plural(int(mins), "minute") + " left";
+    if (mins < 48 * 60) return plural(int(mins / 60), "hour") + " left";
+    return plural(int(mins / (24 * 60)), "day") + " left";
+}
+
+// pollClosedLine is a poll result message's line (beside the poll's
+// author), from the fields of the
+// embed Discord sends with it.
+std::string pollClosedLine(const Message& m) {
+    std::string question, winner;
+    int votes = 0, total = 0;
+    for (const auto& e : m.embeds)
+        for (const auto& f : e.fields) {
+            if (f.name == "poll_question_text") question = f.value;
+            if (f.name == "victor_answer_text") winner = f.value;
+            if (f.name == "victor_answer_votes") votes = std::atoi(f.value.c_str());
+            if (f.name == "total_votes") total = std::atoi(f.value.c_str());
+        }
+    std::string line = "Poll “" + question + "” has closed: ";
+    if (total == 0) return line + "no one voted.";
+    if (winner.empty()) return line + "it's a draw, with " + plural(total, "vote") + ".";
+    return line + "“" + winner + "” won with " + plural(votes, "vote") + " (" +
+           std::to_string(int(std::lround(100.0 * votes / total))) + "%).";
+}
 
 std::string withParams(const std::string& url, const std::string& params) {
     return url + (url.find('?') == std::string::npos ? "?" : "&") + params;
@@ -200,6 +240,7 @@ float App::messageHeight(const Message& m, bool groupStart, float w) {
     if (!normalType(m.type)) return h + line + 2 * scale_;
     float body = 0;
     if (!m.content.empty()) body += layoutFor(m, contentW).height;
+    if (m.poll) body += pollHeight(m, contentW) + 4 * scale_;
     body += attachmentsHeight(m, contentW);
     for (const auto& e : m.embeds) body += embedHeight(e, contentW) + 4 * scale_;
     body += m.stickers.size() * (stickerSize + 4) * scale_;
@@ -476,6 +517,7 @@ void App::message(const Message& m, bool groupStart, bool alt, float w, float h)
         };
         auto it = lines.find(m.type);
         std::string line = it != lines.end() ? it->second : (m.content.empty() ? "did something Discord didn't explain." : m.content);
+        if (m.type == 46) line = pollClosedLine(m);
         ImGui::PushFont(fonts_.italic, kBody);
         dl->AddText(ImVec2(o.x + left, textY), U32(c.muted), line.c_str());
         ImGui::PopFont();
@@ -518,6 +560,10 @@ void App::message(const Message& m, bool groupStart, bool alt, float w, float h)
             }
         }
         y += l.height;
+    }
+    if (m.poll) {
+        poll(m, o.x + left, y + 2 * scale_, contentW);
+        y += pollHeight(m, contentW) + 4 * scale_;
     }
     attachments(m, o.x + left, y, contentW);
     y += attachmentsHeight(m, contentW);
@@ -587,6 +633,7 @@ void App::message(const Message& m, bool groupStart, bool alt, float w, float h)
                            IdString(m.channelId) + "/" + IdString(m.id);
         if (ImGui::MenuItem("Copy message link")) ImGui::SetClipboardText(link.c_str());
         if (canManage && !m.embeds.empty() && ImGui::MenuItem("Remove embeds")) suppressEmbeds(m.channelId, m.id);
+        if (mine && m.poll && !m.poll->Closed(nowMs()) && ImGui::MenuItem("End poll now")) endPoll(m.channelId, m.id);
         if (canManage) {
             ImGui::Separator();
             ImGui::PushStyleColor(ImGuiCol_Text, c.bad);
@@ -962,6 +1009,195 @@ void App::embed(const Message& m, const Embed& e, float x, float y, float w) {
         dl->AddText(ImVec2(ix, y + h - pad - 16 * scale_), U32(c.muted), e.footer.c_str());
         ImGui::PopFont();
     }
+}
+
+// --- polls ---
+
+namespace {
+constexpr float kAnswerH = 38, kAnswerGap = 6;
+}
+
+float App::pollHeight(const Message& m, float w) {
+    const Poll& p = *m.poll;
+    float bw = std::min(w, 440 * scale_), pad = 12 * scale_;
+    float h = pad + textLayout("pq" + IdString(m.id), "**" + p.question + "**", bw - pad * 2, m.guildId, 16, false).height;
+    h += 22 * scale_;  // how many answers may be picked
+    h += p.answers.size() * (kAnswerH + kAnswerGap) * scale_;
+    return h + 20 * scale_ + pad;  // the footer
+}
+
+void App::poll(const Message& m, float x, float y, float w) {
+    const Poll& p = *m.poll;
+    const Palette& c = Colours();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    float bw = std::min(w, 440 * scale_), pad = 12 * scale_, h = pollHeight(m, w);
+    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + bw, y + h), U32(c.code));
+    bool closed = p.Closed(nowMs()), voted = p.Voted();
+    bool canVote = !closed && !m.pending;
+    // Results show once we've voted or it's over, as in Discord, so the
+    // count so far doesn't sway the vote.
+    bool results = voted || closed;
+    int total = p.Total(), most = 0;
+    for (const auto& a : p.answers) most = std::max(most, a.count);
+    float ix = x + pad, iy = y + pad, iw = bw - pad * 2;
+
+    const Layout& q = textLayout("pq" + IdString(m.id), "**" + p.question + "**", iw, m.guildId, 16, false);
+    Draw(q, ImVec2(ix, iy), [this](const std::string& url) { return texture(url); }, {});
+    iy += q.height;
+    ImGui::PushFont(fonts_.regular, 12);
+    dl->AddText(ImVec2(ix, iy + 4 * scale_), U32(c.muted), p.multi ? "Select one or more answers" : "Select one answer");
+    ImGui::PopFont();
+    iy += 22 * scale_;
+
+    float ah = kAnswerH * scale_, img = 20 * scale_;
+    ImGui::PushID(int(m.id & 0x7FFFFFFF));
+    for (size_t i = 0; i < p.answers.size(); i++) {
+        const Poll::Answer& a = p.answers[i];
+        ImVec2 ra(ix, iy), rb(ix + iw, iy + ah);
+        ImGui::SetCursorScreenPos(ra);
+        ImGui::PushID(int(i));
+        bool clicked = ImGui::InvisibleButton("a", ImVec2(iw, ah));
+        bool hov = ImGui::IsItemHovered() && canVote;
+        ImGui::PopID();
+        dl->AddRectFilled(ra, rb, U32(hov ? c.hover : c.sidebar));
+        if (results && total > 0 && a.count > 0) {
+            float frac = float(a.count) / float(total);
+            bool lead = closed && a.count == most;
+            dl->AddRectFilled(ra, ImVec2(ra.x + iw * frac, rb.y), a.me || lead ? U32(c.accent, 0.35f) : U32(c.border));
+        }
+        if (a.me) dl->AddRect(ra, rb, U32(c.accent));
+        // The marker: round for one answer, square for several; filled
+        // where we voted.
+        float r = 7 * scale_;
+        ImVec2 mc(ra.x + 10 * scale_ + r, ra.y + ah / 2);
+        if (canVote || voted) {
+            if (p.multi) {
+                ImVec2 ma(mc.x - r, mc.y - r), mb(mc.x + r, mc.y + r);
+                if (a.me) dl->AddRectFilled(ma, mb, U32(c.accent));
+                else dl->AddRect(ma, mb, U32(c.muted), 0, 0, 1.5f * scale_);
+            } else if (a.me) {
+                dl->AddCircleFilled(mc, r, U32(c.accent));
+                dl->AddCircleFilled(mc, r * 0.4f, U32(c.sidebar));
+            } else {
+                dl->AddCircle(mc, r, U32(c.muted), 0, 1.5f * scale_);
+            }
+        }
+        // No markers on a closed poll we didn't vote in: nothing to mark.
+        float tx = canVote || voted ? mc.x + r + 10 * scale_ : ra.x + 12 * scale_;
+        if (a.emoji.id || !a.emoji.name.empty()) {
+            if (ImTextureID t = image(emojiUrl(a.emoji), a.emoji.animated && hovered_ == m.id))
+                dl->AddImage(ImTextureRef(t), ImVec2(tx, ra.y + (ah - img) / 2), ImVec2(tx + img, ra.y + (ah + img) / 2));
+            tx += img + 8 * scale_;
+        }
+        std::string right;
+        if (results) right = plural(a.count, "vote") + "   " + std::to_string(total ? int(std::lround(100.0 * a.count / total)) : 0) + "%";
+        ImGui::PushFont(fonts_.semibold, 13);
+        float rw = right.empty() ? 0 : ImGui::CalcTextSize(right.c_str()).x;
+        if (!right.empty())
+            dl->AddText(ImVec2(rb.x - 10 * scale_ - rw, ra.y + (ah - ImGui::GetFontSize()) / 2), U32(a.me ? c.heading : c.muted), right.c_str());
+        ImGui::PopFont();
+        ImGui::PushFont(fonts_.regular, 15);
+        dl->PushClipRect(ImVec2(tx, ra.y), ImVec2(rb.x - 16 * scale_ - rw, rb.y), true);
+        dl->AddText(ImVec2(tx, ra.y + (ah - ImGui::GetFontSize()) / 2), U32(c.heading), a.text.c_str());
+        dl->PopClipRect();
+        ImGui::PopFont();
+        if (hov) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        if (clicked && canVote) {
+            // One answer: a click moves the vote there, or takes it back.
+            // Several: a click adds or takes away that one.
+            std::vector<int> mine;
+            if (p.multi)
+                for (const auto& b : p.answers)
+                    if (b.me != (b.id == a.id)) mine.push_back(b.id);
+            if (!p.multi && !a.me) mine.push_back(a.id);
+            vote(m.channelId, m.id, mine);
+        }
+        iy += ah + kAnswerGap * scale_;
+    }
+
+    // Footer: votes, time left or closed, and taking a vote back.
+    ImGui::PushFont(fonts_.regular, 12);
+    std::string foot = plural(total, "vote") + "  ·  " +
+                       (closed ? std::string(p.finalized ? "Final results" : "Poll closed") : p.expiry ? timeLeft(p.expiry - nowMs()) : "Open");
+    float fy = iy + 2 * scale_;
+    dl->AddText(ImVec2(ix, fy), U32(c.muted), foot.c_str());
+    if (voted && canVote) {
+        const char* label = p.multi ? "Remove votes" : "Remove vote";
+        ImVec2 sz = ImGui::CalcTextSize(label);
+        ImVec2 la(ix + iw - sz.x, fy);
+        ImGui::SetCursorScreenPos(la);
+        bool clicked = ImGui::InvisibleButton("remove", sz);
+        bool hov = ImGui::IsItemHovered();
+        dl->AddText(la, U32(hov ? c.heading : c.link), label);
+        if (hov) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        if (clicked) vote(m.channelId, m.id, {});
+    }
+    ImGui::PopFont();
+    ImGui::PopID();
+}
+
+void App::pollDialog() {
+    const Palette& c = Colours();
+    PollDraft& d = pollDraft_;
+    if (pollOpen_) {
+        ImGui::OpenPopup("New poll");
+        pollOpen_ = false;
+        if (d.answers.empty()) d.answers.assign(2, std::vector<char>(56, 0));
+        d.error.clear();
+    }
+    ImGui::SetNextWindowSize(ImVec2(440 * scale_, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20 * scale_, 16 * scale_));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8 * scale_, 8 * scale_));
+    if (ImGui::BeginPopupModal("New poll", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar)) {
+        ImGui::PushFont(fonts_.semibold, kH2);
+        ImGui::TextUnformatted("New poll");
+        ImGui::PopFont();
+        float fieldW = ImGui::GetContentRegionAvail().x;
+        ImGui::TextDisabled("Question");
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        ImGui::SetNextItemWidth(fieldW);
+        ImGui::InputTextWithHint("##q", "What do you want to ask?", d.question.data(), d.question.size());
+        ImGui::TextDisabled("Answers");
+        for (size_t i = 0; i < d.answers.size(); i++) {
+            ImGui::PushID(int(i));
+            float bw = 28 * scale_;
+            ImGui::SetNextItemWidth(d.answers.size() > 1 ? fieldW - bw - ImGui::GetStyle().ItemSpacing.x : fieldW);
+            ImGui::InputTextWithHint("##a", ("Answer " + std::to_string(i + 1)).c_str(), d.answers[i].data(), d.answers[i].size());
+            if (d.answers.size() > 1) {
+                ImGui::SameLine();
+                if (iconButton("x", icon::Dismiss, ImVec2(bw, ImGui::GetFrameHeight()), 11, fonts_.regular, "Remove")) {
+                    d.answers.erase(d.answers.begin() + i);
+                    ImGui::PopID();
+                    break;
+                }
+            }
+            ImGui::PopID();
+        }
+        if (d.answers.size() < 10 && ImGui::Button("Add another answer")) d.answers.push_back(std::vector<char>(56, 0));
+        ImGui::Spacing();
+        // In the order of the hours sendPoll offers.
+        static const char* lengths[] = {"1 hour", "4 hours", "8 hours", "24 hours", "3 days", "1 week", "2 weeks"};
+        ImGui::TextDisabled("Runs for");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(120 * scale_);
+        ImGui::Combo("##len", &d.duration, lengths, IM_ARRAYSIZE(lengths));
+        ImGui::SameLine(0, 20 * scale_);
+        ImGui::Checkbox("Allow several answers", &d.multi);
+        if (!d.error.empty()) ImGui::TextColored(c.bad, "%s", d.error.c_str());
+        ImGui::Spacing();
+        float bw = 80 * scale_;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + fieldW - bw * 2 - ImGui::GetStyle().ItemSpacing.x);
+        if (ImGui::Button("Cancel", ImVec2(bw, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Button, c.accent);
+        if (ImGui::Button("Post", ImVec2(bw, 0))) {
+            sendPoll();
+            if (d.error.empty()) ImGui::CloseCurrentPopup();
+        }
+        ImGui::PopStyleColor();
+        ImGui::EndPopup();
+    }
+    ImGui::PopStyleVar(2);
 }
 
 // --- reactions ---
@@ -1450,7 +1686,8 @@ void App::composer(float x, float y, float w, float* height) {
 
     // The box: attach button, text, emoji button.
     float btn = 32 * scale_, base = 32 * scale_;  // the box's height with one line
-    float textW = boxW - btn * 2;
+    bool canPoll = !editing_ && (!guild_ || (perms(channel_) & perm::SendPolls));
+    float textW = boxW - btn * (canPoll ? 3 : 2);
     float textH = ImGui::CalcTextSize(draft_.data(), nullptr, false, textW - 20 * scale_).y;
     float lineH = ImGui::GetFontSize();
     // One line keeps the empty box's height, so typing doesn't nudge
@@ -1484,11 +1721,28 @@ void App::composer(float x, float y, float w, float* height) {
         pickerAt_ = ImVec2(a.x + boxW, a.y);
         pickerOpen_ = true;
     }
+    if (canPoll) {
+        // A poll: three bars, drawn, as the icon fonts have none.
+        ImGui::SetCursorScreenPos(ImVec2(a.x + boxW - btn * 2, a.y + (base - btn) / 2));
+        ImVec2 pa = ImGui::GetCursorScreenPos();
+        bool pressed = ImGui::InvisibleButton("poll", ImVec2(btn, btn));
+        bool hov = ImGui::IsItemHovered();
+        if (hov) {
+            dl->AddRectFilled(pa, ImVec2(pa.x + btn, pa.y + btn), U32(c.hover));
+            ImGui::SetTooltip("Poll");
+        }
+        ImU32 col = U32(hov ? c.heading : c.muted);
+        float bx = pa.x + btn / 2 - 7 * scale_, by = pa.y + btn / 2 + 6 * scale_, barW = 3 * scale_;
+        float heights[] = {6, 12, 9};
+        for (int i = 0; i < 3; i++)
+            dl->AddRectFilled(ImVec2(bx + i * 5.5f * scale_, by - heights[i] * scale_), ImVec2(bx + i * 5.5f * scale_ + barW, by), col);
+        if (pressed) pollOpen_ = true;
+    }
 
     // A click anywhere in the box, beside the text too, is for writing.
     // (Clicks on the text box itself are its own, to place the cursor.)
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ImGui::IsWindowHovered() &&
-        ImGui::IsMouseHoveringRect(ImVec2(a.x + btn, a.y), ImVec2(a.x + boxW - btn, a.y + boxH)) &&
+        ImGui::IsMouseHoveringRect(ImVec2(a.x + btn, a.y), ImVec2(a.x + btn + textW, a.y + boxH)) &&
         !composerRect_.Contains(ImGui::GetMousePos()))
         focusComposer_ = true;
 

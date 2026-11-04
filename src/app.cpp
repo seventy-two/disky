@@ -1193,6 +1193,105 @@ void App::react(uint64_t channel, uint64_t id, const Emoji& e, bool add) {
     sender_->Run([api, path, add] { api->Call(add ? "PUT" : "DELETE", path); });
 }
 
+namespace {
+
+// apiWhy is Discord's reason for a failed call, else the transport's.
+std::string apiWhy(const HttpResult& r) {
+    json body = json::parse(r.body, nullptr, false);
+    if (body.is_object() && body.contains("message") && body["message"].is_string()) return body["message"].get<std::string>();
+    return r.error.empty() ? "HTTP " + std::to_string(r.status) : r.error;
+}
+
+}  // namespace
+
+void App::vote(uint64_t channel, uint64_t id, const std::vector<int>& answers) {
+    const Poll* p = nullptr;
+    for (const auto& m : store_.messages[channel].list)
+        if (m.id == id && m.poll) p = &*m.poll;
+    if (!p) return;
+    // Show it now, as events from us; the gateway's echoes are recognised.
+    std::vector<std::pair<int, bool>> changes;  // answer, added
+    for (const auto& a : p->answers) {
+        bool want = std::find(answers.begin(), answers.end(), a.id) != answers.end();
+        if (want != a.me) changes.push_back({a.id, want});
+    }
+    auto apply = [this, channel, id](const std::vector<std::pair<int, bool>>& cs, bool undo) {
+        for (const auto& [answer, added] : cs)
+            store_.Apply(added != undo ? "MESSAGE_POLL_VOTE_ADD" : "MESSAGE_POLL_VOTE_REMOVE",
+                         {{"channel_id", IdString(channel)}, {"message_id", IdString(id)}, {"user_id", IdString(store_.me)},
+                          {"answer_id", answer}});
+    };
+    apply(changes, false);
+    json ids = json::array();
+    for (int a : answers) ids.push_back(std::to_string(a));
+    int gen = generation_;
+    Api* api = api_.get();
+    std::string path = "/channels/" + IdString(channel) + "/polls/" + IdString(id) + "/answers/@me";
+    sender_->Run([this, api, path, ids, changes, apply, channel, gen] {
+        HttpResult r = api->Call("PUT", path, {{"answer_ids", ids}});
+        if (r.ok()) return;
+        std::string why = apiWhy(r);
+        post([this, changes, apply, channel, why, gen] {
+            if (gen != generation_) return;
+            apply(changes, true);
+            if (channel == channel_) composeError_ = "Couldn't vote: " + why;
+        });
+    });
+}
+
+void App::endPoll(uint64_t channel, uint64_t id) {
+    int gen = generation_;
+    Api* api = api_.get();
+    std::string path = "/channels/" + IdString(channel) + "/polls/" + IdString(id) + "/expire";
+    sender_->Run([this, api, path, channel, gen] {
+        HttpResult r = api->Call("POST", path);
+        if (r.ok()) return;  // MESSAGE_UPDATE brings the final counts
+        std::string why = apiWhy(r);
+        post([this, channel, why, gen] {
+            if (gen == generation_ && channel == channel_) composeError_ = "Couldn't end the poll: " + why;
+        });
+    });
+}
+
+// The poll lengths Discord offers, in hours.
+const int kPollHours[] = {1, 4, 8, 24, 72, 168, 336};
+
+void App::sendPoll() {
+    PollDraft& d = pollDraft_;
+    json answers = json::array();
+    for (const auto& a : d.answers)
+        if (a[0]) answers.push_back({{"poll_media", {{"text", std::string(a.data())}}}});
+    if (!d.question[0]) {
+        d.error = "Write a question.";
+        return;
+    }
+    if (answers.empty()) {
+        d.error = "Give it at least one answer.";
+        return;
+    }
+    json payload = {{"nonce", NewNonce()},
+                    {"poll",
+                     {{"question", {{"text", std::string(d.question.data())}}},
+                      {"answers", answers},
+                      {"duration", kPollHours[d.duration]},
+                      {"allow_multiselect", d.multi},
+                      {"layout_type", 1}}}};
+    uint64_t channel = channel_;
+    int gen = generation_;
+    Api* api = api_.get();
+    std::string path = "/channels/" + IdString(channel) + "/messages";
+    sender_->Run([this, api, path, payload, channel, gen] {
+        HttpResult r = api->Call("POST", path, payload);
+        if (r.ok()) return;  // it arrives with MESSAGE_CREATE
+        std::string why = apiWhy(r);
+        post([this, channel, why, gen] {
+            if (gen == generation_ && channel == channel_) composeError_ = "Couldn't send the poll: " + why;
+        });
+    });
+    d = PollDraft();
+    pollOpen_ = false;
+}
+
 const App::Reactors& App::reactors(const Message& m, const Reaction& r) {
     const Emoji& e = r.emoji;
     std::string code = e.id ? UrlEncode(e.name + ":" + IdString(e.id)) : UrlEncode(e.name);

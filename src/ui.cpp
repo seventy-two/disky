@@ -104,6 +104,7 @@ void App::Frame() {
         serverMenu();
         emojiPicker();
         settings();
+        pollDialog();
         // Back/forward: mouse buttons 4 and 5 (ImGui's 3 and 4), Alt+Left/Right.
         if (!bindingKey_ && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId)) {
             ImGuiIO& io = ImGui::GetIO();

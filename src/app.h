@@ -114,6 +114,11 @@ private:
     // "Remove all embeds"); they only come back if the message is edited.
     void suppressEmbeds(uint64_t channel, uint64_t id);
     void react(uint64_t channel, uint64_t id, const Emoji& e, bool add);
+    // Polls: vote sets our answers to a poll (none takes our vote back),
+    // endPoll closes our own early, and sendPoll posts a new one.
+    void vote(uint64_t channel, uint64_t id, const std::vector<int>& answers);
+    void endPoll(uint64_t channel, uint64_t id);
+    void sendPoll();
     // Who reacted, by message and emoji: fetched the first time a reaction's
     // hovered, again once its count has changed.
     struct Reactors {
@@ -170,6 +175,9 @@ private:
                ImVec2 at, ImVec2 size, bool spoiler, bool gif);
     float reactionsHeight(const Message& m, float w);
     void reactions(const Message& m, float x, float y, float w);
+    float pollHeight(const Message& m, float w);
+    void poll(const Message& m, float x, float y, float w);
+    void pollDialog();
     void toolbar(const Message& m, ImVec2 topRight);
     void composer(float x, float y, float w, float* height);
     void autocomplete(ImVec2 above, float w);
@@ -308,6 +316,15 @@ private:
     };
     std::vector<Pending> files_;
     std::string composeError_;
+    // The new-poll dialog's fields.
+    struct PollDraft {
+        std::vector<char> question = std::vector<char>(301, 0);
+        std::vector<std::vector<char>> answers;
+        int duration = 3;  // index into the lengths offered (24 hours, as Discord)
+        bool multi = false;
+        std::string error;
+    } pollDraft_;
+    bool pollOpen_ = false;
     // Mentions picked from autocomplete, by the text inserted.
     std::map<std::string, std::string> mentionCodes_;
     struct Suggestion {

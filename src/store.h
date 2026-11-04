@@ -47,6 +47,7 @@ constexpr uint64_t ManageMessages = 1ull << 13;
 constexpr uint64_t AttachFiles = 1ull << 15;
 constexpr uint64_t ReadHistory = 1ull << 16;
 constexpr uint64_t MentionEveryone = 1ull << 17;
+constexpr uint64_t SendPolls = 1ull << 49;
 constexpr uint64_t All = ~0ull;
 }  // namespace perm
 
@@ -162,6 +163,36 @@ struct Reaction {
     bool me = false;
 };
 
+// Poll is a message's poll: its answers with their votes so far, which
+// the gateway keeps up to date (vote events, and a message update with the
+// final counts when it closes).
+struct Poll {
+    struct Answer {
+        int id = 0;
+        std::string text;
+        Emoji emoji;
+        int count = 0;
+        bool me = false;
+    };
+    std::string question;
+    std::vector<Answer> answers;
+    int64_t expiry = 0;  // Unix ms; 0 if it never closes
+    bool multi = false;      // more than one answer allowed
+    bool finalized = false;  // closed and counted
+    int Total() const {
+        int n = 0;
+        for (const auto& a : answers) n += a.count;
+        return n;
+    }
+    bool Voted() const {
+        for (const auto& a : answers)
+            if (a.me) return true;
+        return false;
+    }
+    // Closed is whether it's over, by Discord's word or the clock.
+    bool Closed(int64_t nowMs) const { return finalized || (expiry && nowMs >= expiry); }
+};
+
 struct Message {
     Snowflake id = 0, channelId = 0, guildId = 0, authorId = 0;
     int type = 0;
@@ -179,6 +210,7 @@ struct Message {
         int format = 1;  // 1 PNG, 2 APNG, 3 Lottie, 4 GIF
     };
     std::vector<Sticker> stickers;
+    std::optional<Poll> poll;
     // A reply's original, as it was sent with the reply.
     Snowflake replyTo = 0;
     struct Reply {
@@ -345,6 +377,8 @@ private:
     void readSettingsProto(const std::string& base64);
     void memberListUpdate(const json& d);
     void reactionAdd(const json& d, bool add);
+    void pollVote(const json& d, bool add);
+    void readPollResults(Poll& poll, const json& p);
     Message* findMessage(Snowflake channelId, Snowflake id);
     // asked is who we've already asked the gateway about, by guild.
     std::set<std::pair<Snowflake, Snowflake>> asked_;

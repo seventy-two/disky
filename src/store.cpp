@@ -575,6 +575,23 @@ Message Store::ParseMessage(const json& j) {
         re.me = flag(r, "me");
         m.reactions.push_back(std::move(re));
     }
+    if (auto p = j.find("poll"); p != j.end() && p->is_object()) {
+        Poll poll;
+        if (auto q = p->find("question"); q != p->end() && q->is_object()) poll.question = str(*q, "text");
+        for (const auto& a : arr(*p, "answers")) {
+            Poll::Answer an;
+            an.id = num(a, "answer_id");
+            if (auto md = a.find("poll_media"); md != a.end() && md->is_object()) {
+                an.text = str(*md, "text");
+                if (auto e = md->find("emoji"); e != md->end()) an.emoji = readEmoji(*e);
+            }
+            poll.answers.push_back(std::move(an));
+        }
+        poll.expiry = ParseTime(str(*p, "expiry"));
+        poll.multi = flag(*p, "allow_multiselect");
+        readPollResults(poll, *p);
+        m.poll = std::move(poll);
+    }
     for (const auto& s : arr(j, "sticker_items")) m.stickers.push_back({id(s, "id"), str(s, "name"), num(s, "format_type", 1)});
     if (auto ref = j.find("message_reference"); ref != j.end() && ref->is_object() && num(*ref, "type") == 0 &&
                                                 (m.type == 19 || j.contains("referenced_message")))
@@ -777,6 +794,19 @@ std::vector<Effect> Store::Apply(const std::string& type, const json& d) {
             if (d.contains("mention_everyone")) old->mentionEveryone = m.mentionEveryone;
             if (d.contains("reactions")) old->reactions = m.reactions;
             if (d.contains("flags")) old->flags = m.flags;
+            if (d.contains("poll")) {
+                // An update without results leaves the counts we have.
+                if (old->poll && m.poll && !d["poll"].contains("results")) {
+                    for (auto& a : m.poll->answers)
+                        for (const auto& b : old->poll->answers)
+                            if (a.id == b.id) {
+                                a.count = b.count;
+                                a.me = b.me;
+                            }
+                    m.poll->finalized = old->poll->finalized;
+                }
+                old->poll = m.poll;
+            }
         }
     } else if (type == "MESSAGE_DELETE") {
         RemoveMessage(id(d, "channel_id"), id(d, "id"));
@@ -792,6 +822,8 @@ std::vector<Effect> Store::Apply(const std::string& type, const json& d) {
             for (const auto& u : arr(r, "users"))
                 reactionAdd({{"channel_id", IdString(cid)}, {"message_id", IdString(mid)}, {"user_id", u}, {"emoji", r["emoji"]}},
                             true);
+    } else if (type == "MESSAGE_POLL_VOTE_ADD" || type == "MESSAGE_POLL_VOTE_REMOVE") {
+        pollVote(d, type == "MESSAGE_POLL_VOTE_ADD");
     } else if (type == "MESSAGE_REACTION_REMOVE_ALL") {
         if (Message* m = findMessage(id(d, "channel_id"), id(d, "message_id"))) m->reactions.clear();
     } else if (type == "MESSAGE_REACTION_REMOVE_EMOJI") {
@@ -814,6 +846,36 @@ std::vector<Effect> Store::Apply(const std::string& type, const json& d) {
             readSettingsProto(str(*s, "proto"));
     }
     return fx;
+}
+
+void Store::readPollResults(Poll& poll, const json& p) {
+    auto r = p.find("results");
+    if (r == p.end() || !r->is_object()) return;
+    poll.finalized = flag(*r, "is_finalized");
+    for (auto& a : poll.answers) {
+        a.count = 0;
+        a.me = false;
+    }
+    for (const auto& c : arr(*r, "answer_counts"))
+        for (auto& a : poll.answers)
+            if (a.id == num(c, "id")) {
+                a.count = num(c, "count");
+                a.me = flag(c, "me_voted");
+            }
+}
+
+void Store::pollVote(const json& d, bool add) {
+    Message* m = findMessage(id(d, "channel_id"), id(d, "message_id"));
+    if (!m || !m->poll) return;
+    bool mine = id(d, "user_id") == me;
+    for (auto& a : m->poll->answers) {
+        if (a.id != num(d, "answer_id")) continue;
+        // Our own votes are shown as they're sent; the echo changes nothing.
+        if (mine && a.me == add) return;
+        a.count = std::max(0, a.count + (add ? 1 : -1));
+        if (mine) a.me = add;
+        return;
+    }
 }
 
 void Store::reactionAdd(const json& d, bool add) {

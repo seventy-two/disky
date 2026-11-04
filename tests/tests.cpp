@@ -380,6 +380,56 @@ static void testMessages() {
                                         {"emoji", {{"id", nullptr}, {"name", "👍"}}}});
     CHECK(s.messages[201].list[2].reactions.empty());
 
+    // Polls: answers, results, and votes as they come.
+    {
+        json pm = message("715", "201", "2", "x");
+        pm["content"] = "";
+        pm["poll"] = {{"question", {{"text", "Pizza?"}}},
+                      {"answers", {{{"answer_id", 1}, {"poll_media", {{"text", "Yes"}}}},
+                                   {{"answer_id", 2}, {"poll_media", {{"text", "No"}, {"emoji", {{"id", nullptr}, {"name", "🍕"}}}}}}}},
+                      {"expiry", "2026-11-05T12:00:00+00:00"},
+                      {"allow_multiselect", false},
+                      {"results", {{"is_finalized", false}, {"answer_counts", {{{"id", 1}, {"count", 3}, {"me_voted", true}}}}}}};
+        s.Apply("MESSAGE_CREATE", pm);
+        Message* m = nullptr;
+        for (auto& x : s.messages[201].list)
+            if (x.id == 715) m = &x;
+        CHECK(m && m->poll);
+        if (m && m->poll) {
+            const Poll& p = *m->poll;
+            CHECK_EQ(p.question, std::string("Pizza?"));
+            CHECK_EQ(p.answers.size(), size_t(2));
+            CHECK_EQ(p.answers[0].count, 3);
+            CHECK(p.answers[0].me);
+            CHECK_EQ(p.answers[1].emoji.name, std::string("🍕"));
+            CHECK_EQ(p.expiry, ParseTime("2026-11-05T12:00:00+00:00"));
+            CHECK(!p.Closed(p.expiry - 1) && p.Closed(p.expiry));
+            json vote = {{"channel_id", "201"}, {"message_id", "715"}, {"user_id", "9"}, {"answer_id", 2}};
+            s.Apply("MESSAGE_POLL_VOTE_ADD", vote);
+            CHECK_EQ(m->poll->answers[1].count, 1);
+            // Our own vote, already shown, isn't counted twice.
+            vote["user_id"] = "1";
+            vote["answer_id"] = 1;
+            s.Apply("MESSAGE_POLL_VOTE_ADD", vote);
+            CHECK_EQ(m->poll->answers[0].count, 3);
+            s.Apply("MESSAGE_POLL_VOTE_REMOVE", vote);
+            CHECK_EQ(m->poll->answers[0].count, 2);
+            CHECK(!m->poll->answers[0].me);
+            CHECK_EQ(m->poll->Total(), 3);
+            // An update without results keeps the counts; one with them takes them.
+            json up = {{"id", "715"}, {"channel_id", "201"}, {"poll", pm["poll"]}};
+            up["poll"].erase("results");
+            s.Apply("MESSAGE_UPDATE", up);
+            CHECK_EQ(m->poll->Total(), 3);
+            up["poll"]["results"] = {{"is_finalized", true}, {"answer_counts", {{{"id", 2}, {"count", 5}, {"me_voted", false}}}}};
+            s.Apply("MESSAGE_UPDATE", up);
+            CHECK(m->poll->finalized);
+            CHECK_EQ(m->poll->answers[0].count, 0);
+            CHECK_EQ(m->poll->answers[1].count, 5);
+        }
+        s.Apply("MESSAGE_DELETE", {{"id", "715"}, {"channel_id", "201"}});
+    }
+
     s.Apply("MESSAGE_DELETE", {{"id", "690"}, {"channel_id", "201"}});
     CHECK_EQ(s.messages[201].list.size(), size_t(3));
 
